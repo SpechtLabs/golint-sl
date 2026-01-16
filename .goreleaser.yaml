@@ -29,19 +29,22 @@ builds:
       - -X github.com/spechtlabs/golint-sl/internal/version.Date={{.Date}}
 
 archives:
-  - id: golint-sl
+  - id: tar
     formats:
       - tar.gz
+    name_template: >-
+      {{ .ProjectName }}_
+      {{- .Version }}_
+      {{- .Os }}_
+      {{- .Arch }}
+  - id: zip
+    formats:
       - zip
     name_template: >-
       {{ .ProjectName }}_
       {{- .Version }}_
       {{- .Os }}_
       {{- .Arch }}
-    format_overrides:
-      - goos: windows
-        formats:
-          - zip
 
 checksum:
   name_template: 'checksums.txt'
@@ -145,6 +148,8 @@ signs:
 # Homebrew formula
 brews:
   - name: golint-sl
+    ids:
+      - tar
     repository:
       owner: spechtlabs
       name: homebrew-tap
