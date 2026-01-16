@@ -12,6 +12,8 @@ import (
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/analysis/passes/inspect"
 	"golang.org/x/tools/go/ast/inspector"
+
+	"github.com/spechtlabs/golint-sl/internal/nolint"
 )
 
 const Doc = `detect potential hardcoded credentials and secrets
@@ -64,6 +66,7 @@ var secretPatterns = []*regexp.Regexp{
 }
 
 func run(pass *analysis.Pass) (interface{}, error) {
+	reporter := nolint.NewReporter(pass)
 	inspect := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
 
 	nodeFilter := []ast.Node{
@@ -75,18 +78,18 @@ func run(pass *analysis.Pass) (interface{}, error) {
 	inspect.Preorder(nodeFilter, func(n ast.Node) {
 		switch node := n.(type) {
 		case *ast.ValueSpec:
-			checkValueSpec(pass, node)
+			checkValueSpec(reporter, node)
 		case *ast.AssignStmt:
-			checkAssignment(pass, node)
+			checkAssignment(reporter, node)
 		case *ast.KeyValueExpr:
-			checkKeyValue(pass, node)
+			checkKeyValue(reporter, node)
 		}
 	})
 
 	return nil, nil
 }
 
-func checkValueSpec(pass *analysis.Pass, spec *ast.ValueSpec) {
+func checkValueSpec(reporter *nolint.Reporter, spec *ast.ValueSpec) {
 	for i, name := range spec.Names {
 		// Check variable name
 		if isSuspiciousName(name.Name) {
@@ -94,7 +97,7 @@ func checkValueSpec(pass *analysis.Pass, spec *ast.ValueSpec) {
 			if i < len(spec.Values) {
 				if lit, ok := spec.Values[i].(*ast.BasicLit); ok {
 					if lit.Kind.String() == "STRING" && len(lit.Value) > 5 {
-						pass.Reportf(spec.Pos(),
+						reporter.Reportf(spec.Pos(),
 							"potential hardcoded credential in %q; use environment variable or secret management",
 							name.Name)
 					}
@@ -104,19 +107,19 @@ func checkValueSpec(pass *analysis.Pass, spec *ast.ValueSpec) {
 
 		// Check value for secret patterns
 		if i < len(spec.Values) {
-			checkExprForSecrets(pass, spec.Values[i])
+			checkExprForSecrets(reporter, spec.Values[i])
 		}
 	}
 }
 
-func checkAssignment(pass *analysis.Pass, assign *ast.AssignStmt) {
+func checkAssignment(reporter *nolint.Reporter, assign *ast.AssignStmt) {
 	for i, lhs := range assign.Lhs {
 		if ident, ok := lhs.(*ast.Ident); ok {
 			if isSuspiciousName(ident.Name) {
 				if i < len(assign.Rhs) {
 					if lit, ok := assign.Rhs[i].(*ast.BasicLit); ok {
 						if lit.Kind.String() == "STRING" && len(lit.Value) > 5 {
-							pass.Reportf(assign.Pos(),
+							reporter.Reportf(assign.Pos(),
 								"potential hardcoded credential in %q; use environment variable or secret management",
 								ident.Name)
 						}
@@ -128,17 +131,17 @@ func checkAssignment(pass *analysis.Pass, assign *ast.AssignStmt) {
 
 	// Check RHS for secret patterns
 	for _, rhs := range assign.Rhs {
-		checkExprForSecrets(pass, rhs)
+		checkExprForSecrets(reporter, rhs)
 	}
 }
 
-func checkKeyValue(pass *analysis.Pass, kv *ast.KeyValueExpr) {
+func checkKeyValue(reporter *nolint.Reporter, kv *ast.KeyValueExpr) {
 	// Check struct field names
 	if ident, ok := kv.Key.(*ast.Ident); ok {
 		if isSuspiciousName(ident.Name) {
 			if lit, ok := kv.Value.(*ast.BasicLit); ok {
 				if lit.Kind.String() == "STRING" && len(lit.Value) > 5 {
-					pass.Reportf(kv.Pos(),
+					reporter.Reportf(kv.Pos(),
 						"potential hardcoded credential in field %q; use environment variable or secret management",
 						ident.Name)
 				}
@@ -146,10 +149,10 @@ func checkKeyValue(pass *analysis.Pass, kv *ast.KeyValueExpr) {
 		}
 	}
 
-	checkExprForSecrets(pass, kv.Value)
+	checkExprForSecrets(reporter, kv.Value)
 }
 
-func checkExprForSecrets(pass *analysis.Pass, expr ast.Expr) {
+func checkExprForSecrets(reporter *nolint.Reporter, expr ast.Expr) {
 	lit, ok := expr.(*ast.BasicLit)
 	if !ok || lit.Kind.String() != "STRING" {
 		return
@@ -159,7 +162,7 @@ func checkExprForSecrets(pass *analysis.Pass, expr ast.Expr) {
 
 	for _, pattern := range secretPatterns {
 		if pattern.MatchString(value) {
-			pass.Reportf(lit.Pos(),
+			reporter.Reportf(lit.Pos(),
 				"string literal looks like a secret or credential; use environment variable or secret management")
 			return
 		}

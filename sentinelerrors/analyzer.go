@@ -11,6 +11,8 @@ import (
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/analysis/passes/inspect"
 	"golang.org/x/tools/go/ast/inspector"
+
+	"github.com/spechtlabs/golint-sl/internal/nolint"
 )
 
 const Doc = `enforce use of sentinel errors over inline errors.New()
@@ -68,6 +70,7 @@ var Analyzer = &analysis.Analyzer{
 }
 
 func run(pass *analysis.Pass) (interface{}, error) {
+	reporter := nolint.NewReporter(pass)
 	inspect := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
 
 	// Track which functions are at package level (init, etc.)
@@ -99,14 +102,14 @@ func run(pass *analysis.Pass) (interface{}, error) {
 				return
 			}
 
-			checkErrorsNew(pass, node, currentFunc)
+			checkErrorsNew(reporter, node, currentFunc)
 		}
 	})
 
 	return nil, nil
 }
 
-func checkErrorsNew(pass *analysis.Pass, call *ast.CallExpr, currentFunc *ast.FuncDecl) {
+func checkErrorsNew(reporter *nolint.Reporter, call *ast.CallExpr, currentFunc *ast.FuncDecl) {
 	// Check if this is errors.New()
 	selector, ok := call.Fun.(*ast.SelectorExpr)
 	if !ok {
@@ -121,14 +124,14 @@ func checkErrorsNew(pass *analysis.Pass, call *ast.CallExpr, currentFunc *ast.Fu
 	// Check for errors.New()
 	if pkgIdent.Name == "errors" && selector.Sel.Name == "New" {
 		// Check if this is at package level (var declaration) - that's fine
-		if isPackageLevelVar(pass, call) {
+		if isPackageLevelVar(call) {
 			return
 		}
 
 		// Check if the error message is dynamic (contains variables)
 		if len(call.Args) > 0 {
 			if hasVariableContent(call.Args[0]) {
-				pass.Reportf(call.Pos(),
+				reporter.Reportf(call.Pos(),
 					"errors.New() with dynamic content; use fmt.Errorf(\"message: %%w\", err) to wrap errors or define a sentinel error")
 				return
 			}
@@ -139,7 +142,7 @@ func checkErrorsNew(pass *analysis.Pass, call *ast.CallExpr, currentFunc *ast.Fu
 			funcName = currentFunc.Name.Name
 		}
 
-		pass.Reportf(call.Pos(),
+		reporter.Reportf(call.Pos(),
 			"inline errors.New() in function %q; define a package-level sentinel error (var Err... = errors.New(...)) for better error handling with errors.Is()",
 			funcName)
 	}
@@ -151,7 +154,7 @@ func checkErrorsNew(pass *analysis.Pass, call *ast.CallExpr, currentFunc *ast.Fu
 				// This is fmt.Errorf without wrapping - similar to errors.New
 				// but often used for formatting. Only flag if it looks like a constant message
 				if isLiteralString(call.Args[0]) && len(call.Args) == 1 {
-					pass.Reportf(call.Pos(),
+					reporter.Reportf(call.Pos(),
 						"fmt.Errorf() without %%w verb and no formatting; use a sentinel error or wrap an existing error")
 				}
 			}
@@ -159,7 +162,8 @@ func checkErrorsNew(pass *analysis.Pass, call *ast.CallExpr, currentFunc *ast.Fu
 	}
 }
 
-func isPackageLevelVar(pass *analysis.Pass, call *ast.CallExpr) bool {
+func isPackageLevelVar(call *ast.CallExpr) bool {
+	_ = call // Used for potential future enhancement
 	// Check if this call is in a var declaration at package level
 	// This is complex to determine from the call alone
 	// For now, we use a heuristic: check if we're in a function

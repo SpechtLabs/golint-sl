@@ -11,6 +11,8 @@ import (
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/analysis/passes/inspect"
 	"golang.org/x/tools/go/ast/inspector"
+
+	"github.com/spechtlabs/golint-sl/internal/nolint"
 )
 
 const Doc = `detect resources that are not properly closed
@@ -73,6 +75,7 @@ var patterns = []resourcePattern{
 }
 
 func run(pass *analysis.Pass) (interface{}, error) {
+	reporter := nolint.NewReporter(pass)
 	inspect := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
 
 	nodeFilter := []ast.Node{
@@ -85,13 +88,13 @@ func run(pass *analysis.Pass) (interface{}, error) {
 			return
 		}
 
-		checkFunction(pass, fn)
+		checkFunction(reporter, pass, fn)
 	})
 
 	return nil, nil
 }
 
-func checkFunction(pass *analysis.Pass, fn *ast.FuncDecl) {
+func checkFunction(reporter *nolint.Reporter, pass *analysis.Pass, fn *ast.FuncDecl) {
 	// Track variables that hold closeable resources
 	resourceVars := make(map[string]resourceInfo)
 
@@ -122,7 +125,7 @@ func checkFunction(pass *analysis.Pass, fn *ast.FuncDecl) {
 		}
 
 		if !closedResources[closeKey] && !closedResources[varName] {
-			pass.Reportf(info.pos, "%s", info.message)
+			reporter.Reportf(info.pos, "%s", info.message)
 		}
 	}
 }

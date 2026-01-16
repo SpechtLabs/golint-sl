@@ -12,6 +12,8 @@ import (
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/analysis/passes/inspect"
 	"golang.org/x/tools/go/ast/inspector"
+
+	"github.com/spechtlabs/golint-sl/internal/nolint"
 )
 
 const Doc = `ensure context.Context is always the first parameter
@@ -37,6 +39,7 @@ var Analyzer = &analysis.Analyzer{
 }
 
 func run(pass *analysis.Pass) (interface{}, error) {
+	reporter := nolint.NewReporter(pass)
 	inspect := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
 
 	nodeFilter := []ast.Node{
@@ -75,7 +78,7 @@ func run(pass *analysis.Pass) (interface{}, error) {
 
 		// If context exists but isn't first, report
 		if ctxPos > 0 {
-			pass.Reportf(pos.Pos(),
+			reporter.Reportf(pos.Pos(),
 				"context.Context should be the first parameter in %s, not parameter %d",
 				name, ctxPos+1)
 		}

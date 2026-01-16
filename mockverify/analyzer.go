@@ -16,6 +16,8 @@ import (
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/analysis/passes/inspect"
 	"golang.org/x/tools/go/ast/inspector"
+
+	"github.com/spechtlabs/golint-sl/internal/nolint"
 )
 
 const Doc = `enforce compile-time interface verification for mocks
@@ -49,6 +51,7 @@ var MockNamePatterns = []string{
 }
 
 func run(pass *analysis.Pass) (interface{}, error) {
+	reporter := nolint.NewReporter(pass)
 	inspect := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
 
 	// Track mock structs and their interface verifications
@@ -96,7 +99,7 @@ func run(pass *analysis.Pass) (interface{}, error) {
 	for mockName := range mockStructs {
 		if !verifiedMocks[mockName] {
 			if pos, ok := mockPositions[mockName]; ok {
-				pass.Reportf(pos.Pos(),
+				reporter.Reportf(pos.Pos(),
 					"mock %q should have compile-time interface verification: var _ InterfaceName = &%s{}",
 					mockName, mockName)
 			}

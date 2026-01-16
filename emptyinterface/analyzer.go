@@ -12,6 +12,8 @@ import (
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/analysis/passes/inspect"
 	"golang.org/x/tools/go/ast/inspector"
+
+	"github.com/spechtlabs/golint-sl/internal/nolint"
 )
 
 const Doc = `detect problematic uses of interface{}/any
@@ -62,6 +64,7 @@ var Analyzer = &analysis.Analyzer{
 }
 
 func run(pass *analysis.Pass) (interface{}, error) {
+	reporter := nolint.NewReporter(pass)
 	inspect := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
 
 	nodeFilter := []ast.Node{
@@ -73,20 +76,20 @@ func run(pass *analysis.Pass) (interface{}, error) {
 	inspect.Preorder(nodeFilter, func(n ast.Node) {
 		switch node := n.(type) {
 		case *ast.FuncDecl:
-			checkFuncDecl(pass, node)
+			checkFuncDecl(reporter, node)
 
 		case *ast.TypeSpec:
-			checkTypeSpec(pass, node)
+			checkTypeSpec(reporter, node)
 
 		case *ast.TypeAssertExpr:
-			checkTypeAssertion(pass, node)
+			checkTypeAssertion(node)
 		}
 	})
 
 	return nil, nil
 }
 
-func checkFuncDecl(pass *analysis.Pass, fn *ast.FuncDecl) {
+func checkFuncDecl(reporter *nolint.Reporter, fn *ast.FuncDecl) {
 	// Check return types for interface{}
 	if fn.Type.Results != nil {
 		for _, field := range fn.Type.Results.List {
@@ -95,7 +98,7 @@ func checkFuncDecl(pass *analysis.Pass, fn *ast.FuncDecl) {
 				if isAllowedFuncName(fn.Name.Name) {
 					continue
 				}
-				pass.Reportf(field.Pos(),
+				reporter.Reportf(field.Pos(),
 					"function %q returns interface{}/any; return concrete types instead (\"accept interfaces, return structs\")",
 					fn.Name.Name)
 			}
@@ -107,7 +110,7 @@ func checkFuncDecl(pass *analysis.Pass, fn *ast.FuncDecl) {
 		for _, field := range fn.Type.Params.List {
 			if isMapWithEmptyInterface(field.Type) {
 				for _, name := range field.Names {
-					pass.Reportf(field.Pos(),
+					reporter.Reportf(field.Pos(),
 						"parameter %q is map[string]interface{}; consider using a struct or typed map",
 						name.Name)
 				}
@@ -116,7 +119,7 @@ func checkFuncDecl(pass *analysis.Pass, fn *ast.FuncDecl) {
 	}
 }
 
-func checkTypeSpec(pass *analysis.Pass, ts *ast.TypeSpec) {
+func checkTypeSpec(reporter *nolint.Reporter, ts *ast.TypeSpec) {
 	// Check struct fields
 	structType, ok := ts.Type.(*ast.StructType)
 	if !ok {
@@ -127,7 +130,7 @@ func checkTypeSpec(pass *analysis.Pass, ts *ast.TypeSpec) {
 		// Flag map[string]interface{} fields
 		if isMapWithEmptyInterface(field.Type) {
 			fieldNames := getFieldNames(field)
-			pass.Reportf(field.Pos(),
+			reporter.Reportf(field.Pos(),
 				"field %q is map[string]interface{}; consider using a typed struct or wrapping with type-safe methods",
 				fieldNames)
 		}
@@ -135,14 +138,14 @@ func checkTypeSpec(pass *analysis.Pass, ts *ast.TypeSpec) {
 		// Flag []interface{} fields
 		if isSliceOfEmptyInterface(field.Type) {
 			fieldNames := getFieldNames(field)
-			pass.Reportf(field.Pos(),
+			reporter.Reportf(field.Pos(),
 				"field %q is []interface{}; consider using a concrete slice type or generics",
 				fieldNames)
 		}
 	}
 }
 
-func checkTypeAssertion(_ *analysis.Pass, _ *ast.TypeAssertExpr) {
+func checkTypeAssertion(_ *ast.TypeAssertExpr) {
 	// Type assertion checking is complex and requires parent context
 	// to determine if the ok pattern is used. This is left as a
 	// placeholder for future implementation.

@@ -13,6 +13,8 @@ import (
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/analysis/passes/inspect"
 	"golang.org/x/tools/go/ast/inspector"
+
+	"github.com/spechtlabs/golint-sl/internal/nolint"
 )
 
 const Doc = `enforce nil checks on pointer parameters before use
@@ -74,6 +76,7 @@ var skipFilePatterns = []string{
 }
 
 func run(pass *analysis.Pass) (interface{}, error) {
+	reporter := nolint.NewReporter(pass)
 	inspect := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
 
 	nodeFilter := []ast.Node{
@@ -94,13 +97,13 @@ func run(pass *analysis.Pass) (interface{}, error) {
 			}
 		}
 
-		checkFunction(pass, fn)
+		checkFunction(reporter, pass, fn)
 	})
 
 	return nil, nil
 }
 
-func checkFunction(pass *analysis.Pass, fn *ast.FuncDecl) {
+func checkFunction(reporter *nolint.Reporter, pass *analysis.Pass, fn *ast.FuncDecl) {
 	// Collect pointer parameters
 	ptrParams := collectPointerParams(pass, fn)
 	if len(ptrParams) == 0 {
@@ -142,7 +145,7 @@ func checkFunction(pass *analysis.Pass, fn *ast.FuncDecl) {
 			// x.Field - check if x is an unchecked pointer param
 			if ident, ok := node.X.(*ast.Ident); ok {
 				if ptrParams[ident.Name] && !checkedParams[ident.Name] {
-					pass.Reportf(node.Pos(),
+					reporter.Reportf(node.Pos(),
 						"pointer parameter %q used without nil check; add 'if %s == nil { return ... }' at function start",
 						ident.Name, ident.Name)
 					// Mark as reported to avoid duplicate reports
@@ -154,7 +157,7 @@ func checkFunction(pass *analysis.Pass, fn *ast.FuncDecl) {
 			// *x - explicit dereference
 			if ident, ok := node.X.(*ast.Ident); ok {
 				if ptrParams[ident.Name] && !checkedParams[ident.Name] {
-					pass.Reportf(node.Pos(),
+					reporter.Reportf(node.Pos(),
 						"pointer parameter %q dereferenced without nil check; add 'if %s == nil { return ... }' at function start",
 						ident.Name, ident.Name)
 					checkedParams[ident.Name] = true
@@ -165,7 +168,7 @@ func checkFunction(pass *analysis.Pass, fn *ast.FuncDecl) {
 			// x[i] - could be slice/map from pointer
 			if ident, ok := node.X.(*ast.Ident); ok {
 				if ptrParams[ident.Name] && !checkedParams[ident.Name] {
-					pass.Reportf(node.Pos(),
+					reporter.Reportf(node.Pos(),
 						"pointer parameter %q indexed without nil check",
 						ident.Name)
 					checkedParams[ident.Name] = true

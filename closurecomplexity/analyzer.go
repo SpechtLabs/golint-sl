@@ -11,6 +11,8 @@ import (
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/analysis/passes/inspect"
 	"golang.org/x/tools/go/ast/inspector"
+
+	"github.com/spechtlabs/golint-sl/internal/nolint"
 )
 
 const Doc = `detect overly complex anonymous functions (closures)
@@ -65,6 +67,7 @@ const (
 )
 
 func run(pass *analysis.Pass) (interface{}, error) {
+	reporter := nolint.NewReporter(pass)
 	inspect := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
 
 	var currentFunc *ast.FuncDecl
@@ -91,14 +94,14 @@ func run(pass *analysis.Pass) (interface{}, error) {
 			if inTestFile {
 				return // Skip closures in test files
 			}
-			checkClosure(pass, node, currentFunc)
+			checkClosure(reporter, node, currentFunc)
 		}
 	})
 
 	return nil, nil
 }
 
-func checkClosure(pass *analysis.Pass, closure *ast.FuncLit, parentFunc *ast.FuncDecl) {
+func checkClosure(reporter *nolint.Reporter, closure *ast.FuncLit, parentFunc *ast.FuncDecl) {
 	if closure.Body == nil {
 		return
 	}
@@ -106,7 +109,7 @@ func checkClosure(pass *analysis.Pass, closure *ast.FuncLit, parentFunc *ast.Fun
 	// Count statements
 	stmtCount := countStatements(closure.Body)
 	if stmtCount > MaxClosureStatements {
-		pass.Reportf(closure.Pos(),
+		reporter.Reportf(closure.Pos(),
 			"closure has %d statements (max %d); extract complex logic into a named function for testability",
 			stmtCount, MaxClosureStatements)
 	}
@@ -114,7 +117,7 @@ func checkClosure(pass *analysis.Pass, closure *ast.FuncLit, parentFunc *ast.Fun
 	// Check nesting depth
 	depth := maxNestingDepth(closure.Body, 0)
 	if depth > MaxClosureNesting {
-		pass.Reportf(closure.Pos(),
+		reporter.Reportf(closure.Pos(),
 			"closure has nesting depth of %d (max %d); extract into a named function",
 			depth, MaxClosureNesting)
 	}
@@ -123,7 +126,7 @@ func checkClosure(pass *analysis.Pass, closure *ast.FuncLit, parentFunc *ast.Fun
 	if parentFunc != nil {
 		captured := countCapturedVars(closure, parentFunc)
 		if captured > MaxCapturedVars {
-			pass.Reportf(closure.Pos(),
+			reporter.Reportf(closure.Pos(),
 				"closure captures %d variables from outer scope (max %d); consider passing them as parameters or extracting to a named function",
 				captured, MaxCapturedVars)
 		}

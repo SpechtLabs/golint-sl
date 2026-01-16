@@ -12,6 +12,8 @@ import (
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/analysis/passes/inspect"
 	"golang.org/x/tools/go/ast/inspector"
+
+	"github.com/spechtlabs/golint-sl/internal/nolint"
 )
 
 const Doc = `enforce Go package naming conventions
@@ -48,12 +50,13 @@ var genericNames = map[string]bool{
 }
 
 func run(pass *analysis.Pass) (interface{}, error) {
+	reporter := nolint.NewReporter(pass)
 	inspect := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
 
 	pkgName := pass.Pkg.Name()
 
 	// Check package name issues
-	checkPackageName(pass, pkgName)
+	checkPackageName(reporter, pass, pkgName)
 
 	nodeFilter := []ast.Node{
 		(*ast.TypeSpec)(nil),
@@ -63,12 +66,12 @@ func run(pass *analysis.Pass) (interface{}, error) {
 	inspect.Preorder(nodeFilter, func(n ast.Node) {
 		switch node := n.(type) {
 		case *ast.TypeSpec:
-			checkStutter(pass, pkgName, node.Name.Name, node, "type")
+			checkStutter(reporter, pkgName, node.Name.Name, node, "type")
 
 		case *ast.FuncDecl:
 			// Only check exported functions without receivers
 			if node.Recv == nil && ast.IsExported(node.Name.Name) {
-				checkStutter(pass, pkgName, node.Name.Name, node, "function")
+				checkStutter(reporter, pkgName, node.Name.Name, node, "function")
 			}
 		}
 	})
@@ -76,12 +79,12 @@ func run(pass *analysis.Pass) (interface{}, error) {
 	return nil, nil
 }
 
-func checkPackageName(pass *analysis.Pass, name string) {
+func checkPackageName(reporter *nolint.Reporter, pass *analysis.Pass, name string) {
 	// Check for generic names
 	if genericNames[name] {
 		// Report on the first file
 		if len(pass.Files) > 0 {
-			pass.Reportf(pass.Files[0].Package,
+			reporter.Reportf(pass.Files[0].Package,
 				"package name %q is too generic; use a more descriptive name that indicates what the package does",
 				name)
 		}
@@ -90,7 +93,7 @@ func checkPackageName(pass *analysis.Pass, name string) {
 	// Check for underscores
 	if strings.Contains(name, "_") {
 		if len(pass.Files) > 0 {
-			pass.Reportf(pass.Files[0].Package,
+			reporter.Reportf(pass.Files[0].Package,
 				"package name %q contains underscore; use a single lowercase word",
 				name)
 		}
@@ -106,7 +109,7 @@ func checkPackageName(pass *analysis.Pass, name string) {
 	}
 	if hasUpper {
 		if len(pass.Files) > 0 {
-			pass.Reportf(pass.Files[0].Package,
+			reporter.Reportf(pass.Files[0].Package,
 				"package name %q contains uppercase letters; package names should be lowercase",
 				name)
 		}
@@ -124,7 +127,7 @@ func checkPackageName(pass *analysis.Pass, name string) {
 			}
 			if !exceptions[name] {
 				if len(pass.Files) > 0 {
-					pass.Reportf(pass.Files[0].Package,
+					reporter.Reportf(pass.Files[0].Package,
 						"package name %q appears to be plural; use singular form",
 						name)
 				}
@@ -134,7 +137,7 @@ func checkPackageName(pass *analysis.Pass, name string) {
 	}
 }
 
-func checkStutter(pass *analysis.Pass, pkgName, exportedName string, node ast.Node, kind string) {
+func checkStutter(reporter *nolint.Reporter, pkgName, exportedName string, node ast.Node, kind string) {
 	pkgLower := strings.ToLower(pkgName)
 	nameLower := strings.ToLower(exportedName)
 
@@ -144,7 +147,7 @@ func checkStutter(pass *analysis.Pass, pkgName, exportedName string, node ast.No
 		suffix := exportedName[len(pkgName):]
 		if suffix != "" && unicode.IsUpper(rune(suffix[0])) {
 			// This is stutter: http.HTTPClient, user.UserService
-			pass.Reportf(node.Pos(),
+			reporter.Reportf(node.Pos(),
 				"%s %s.%s stutters; consider renaming to %s.%s",
 				kind, pkgName, exportedName, pkgName, suffix)
 		}

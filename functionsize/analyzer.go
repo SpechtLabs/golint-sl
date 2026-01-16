@@ -11,6 +11,8 @@ import (
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/analysis/passes/inspect"
 	"golang.org/x/tools/go/ast/inspector"
+
+	"github.com/spechtlabs/golint-sl/internal/nolint"
 )
 
 const Doc = `enforce function size limits with refactoring advice
@@ -43,6 +45,7 @@ const (
 )
 
 func run(pass *analysis.Pass) (interface{}, error) {
+	reporter := nolint.NewReporter(pass)
 	inspect := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
 
 	nodeFilter := []ast.Node{
@@ -74,11 +77,11 @@ func run(pass *analysis.Pass) (interface{}, error) {
 		advice := analyzeFunction(fn)
 
 		if lines >= errorThreshold {
-			pass.Reportf(fn.Pos(),
+			reporter.Reportf(fn.Pos(),
 				"function %s is %d lines (max %d); %s",
 				fn.Name.Name, lines, errorThreshold, advice)
 		} else if lines >= warnThreshold {
-			pass.Reportf(fn.Pos(),
+			reporter.Reportf(fn.Pos(),
 				"function %s is %d lines (recommended max %d); %s",
 				fn.Name.Name, lines, warnThreshold, advice)
 		}

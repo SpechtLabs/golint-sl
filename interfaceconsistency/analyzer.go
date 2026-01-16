@@ -12,6 +12,8 @@ import (
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/analysis/passes/inspect"
 	"golang.org/x/tools/go/ast/inspector"
+
+	"github.com/spechtlabs/golint-sl/internal/nolint"
 )
 
 const Doc = `enforce interface-driven design patterns
@@ -52,6 +54,7 @@ var shouldDefineInterfacePatterns = []string{
 }
 
 func run(pass *analysis.Pass) (interface{}, error) {
+	reporter := nolint.NewReporter(pass)
 	inspect := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
 
 	// Track interfaces and their implementations
@@ -84,12 +87,12 @@ func run(pass *analysis.Pass) (interface{}, error) {
 		switch node := n.(type) {
 		case *ast.TypeSpec:
 			if st, ok := node.Type.(*ast.StructType); ok {
-				checkStructFieldsUseInterfaces(pass, node, st)
+				checkStructFieldsUseInterfaces(reporter, pass, node, st)
 			}
 
 		case *ast.FuncDecl:
-			checkConstructorReturnsInterface(pass, node, interfaces)
-			checkDependencyInjection(pass, node)
+			checkConstructorReturnsInterface(reporter, node, interfaces)
+			checkDependencyInjection(reporter, node)
 		}
 	})
 
@@ -100,7 +103,7 @@ func run(pass *analysis.Pass) (interface{}, error) {
 }
 
 // checkStructFieldsUseInterfaces ensures struct fields that look like dependencies use interfaces
-func checkStructFieldsUseInterfaces(pass *analysis.Pass, ts *ast.TypeSpec, st *ast.StructType) {
+func checkStructFieldsUseInterfaces(reporter *nolint.Reporter, pass *analysis.Pass, ts *ast.TypeSpec, st *ast.StructType) {
 	if st.Fields == nil {
 		return
 	}
@@ -117,7 +120,7 @@ func checkStructFieldsUseInterfaces(pass *analysis.Pass, ts *ast.TypeSpec, st *a
 						// Only report for pointer types to concrete structs
 						if star, ok := field.Type.(*ast.StarExpr); ok {
 							if _, ok := star.X.(*ast.Ident); ok {
-								pass.Reportf(field.Pos(),
+								reporter.Reportf(field.Pos(),
 									"field %q in struct %q looks like a dependency; consider using an interface type instead of concrete type for better testability",
 									fieldName, ts.Name.Name)
 							}
@@ -142,7 +145,7 @@ func isInterfaceType(pass *analysis.Pass, expr ast.Expr) bool {
 }
 
 // checkConstructorReturnsInterface ensures New* functions return interfaces when appropriate
-func checkConstructorReturnsInterface(pass *analysis.Pass, fn *ast.FuncDecl, interfaces map[string]*ast.TypeSpec) {
+func checkConstructorReturnsInterface(reporter *nolint.Reporter, fn *ast.FuncDecl, interfaces map[string]*ast.TypeSpec) {
 	if fn.Name == nil {
 		return
 	}
@@ -186,7 +189,7 @@ func checkConstructorReturnsInterface(pass *analysis.Pass, fn *ast.FuncDecl, int
 
 		// If returning concrete type instead of interface
 		if strings.Contains(resultType, "*"+typeName) && !strings.Contains(resultType, interfaceName) {
-			pass.Reportf(fn.Pos(),
+			reporter.Reportf(fn.Pos(),
 				"constructor %q returns concrete type; consider returning interface %q for better abstraction",
 				name, interfaceName)
 		}
@@ -194,7 +197,7 @@ func checkConstructorReturnsInterface(pass *analysis.Pass, fn *ast.FuncDecl, int
 }
 
 // checkDependencyInjection ensures dependencies are injected, not created internally
-func checkDependencyInjection(pass *analysis.Pass, fn *ast.FuncDecl) {
+func checkDependencyInjection(reporter *nolint.Reporter, fn *ast.FuncDecl) {
 	if fn.Body == nil {
 		return
 	}
@@ -224,7 +227,7 @@ func checkDependencyInjection(pass *analysis.Pass, fn *ast.FuncDecl) {
 			// Check if this is creating a service/client/repository
 			for _, pattern := range shouldBeInterfacePatterns {
 				if strings.Contains(funcName, pattern) {
-					pass.Reportf(call.Pos(),
+					reporter.Reportf(call.Pos(),
 						"creating %s inside function; consider injecting it as a dependency for better testability",
 						funcName)
 				}

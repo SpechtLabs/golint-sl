@@ -12,6 +12,8 @@ import (
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/analysis/passes/inspect"
 	"golang.org/x/tools/go/ast/inspector"
+
+	"github.com/spechtlabs/golint-sl/internal/nolint"
 )
 
 const Doc = `ensure TODO/FIXME comments have owners and context
@@ -45,6 +47,7 @@ var wellFormedTODO = regexp.MustCompile(`(?i)(TODO|FIXME)\s*\([^)]+\)\s*:\s*\S+`
 var anyTODO = regexp.MustCompile(`(?i)(TODO|FIXME)`)
 
 func run(pass *analysis.Pass) (interface{}, error) {
+	reporter := nolint.NewReporter(pass)
 	inspect := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
 
 	nodeFilter := []ast.Node{
@@ -56,7 +59,7 @@ func run(pass *analysis.Pass) (interface{}, error) {
 
 		for _, cg := range file.Comments {
 			for _, comment := range cg.List {
-				checkComment(pass, comment)
+				checkComment(reporter, comment)
 			}
 		}
 	})
@@ -64,7 +67,7 @@ func run(pass *analysis.Pass) (interface{}, error) {
 	return nil, nil
 }
 
-func checkComment(pass *analysis.Pass, comment *ast.Comment) {
+func checkComment(reporter *nolint.Reporter, comment *ast.Comment) {
 	text := comment.Text
 
 	// Check if this comment contains TODO or FIXME
@@ -85,16 +88,16 @@ func checkComment(pass *analysis.Pass, comment *ast.Comment) {
 
 	// Determine what's wrong
 	if !strings.Contains(text, "(") {
-		pass.Reportf(comment.Pos(),
+		reporter.Reportf(comment.Pos(),
 			"%s without owner; use %s(username): description",
 			todoType, todoType)
 	} else if !strings.Contains(text, ":") {
-		pass.Reportf(comment.Pos(),
+		reporter.Reportf(comment.Pos(),
 			"%s without description; use %s(owner): what needs to be done",
 			todoType, todoType)
 	} else {
 		// Has parens and colon but doesn't match pattern - likely malformed
-		pass.Reportf(comment.Pos(),
+		reporter.Reportf(comment.Pos(),
 			"%s appears malformed; use format: %s(owner): description",
 			todoType, todoType)
 	}

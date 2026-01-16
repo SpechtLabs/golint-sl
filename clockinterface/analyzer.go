@@ -19,6 +19,8 @@ import (
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/analysis/passes/inspect"
 	"golang.org/x/tools/go/ast/inspector"
+
+	"github.com/spechtlabs/golint-sl/internal/nolint"
 )
 
 const Doc = `enforce clock interface pattern for testable time operations
@@ -67,6 +69,7 @@ var ExemptFunctions = []string{
 }
 
 func run(pass *analysis.Pass) (interface{}, error) {
+	reporter := nolint.NewReporter(pass)
 	inspect := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
 
 	// Check if package is exempt
@@ -144,7 +147,7 @@ func run(pass *analysis.Pass) (interface{}, error) {
 					if hasClockInterface {
 						suggestion = "use the Clock interface defined in this package"
 					}
-					pass.Reportf(call.Pos(),
+					reporter.Reportf(call.Pos(),
 						"direct time.Now() call in business logic; %s", suggestion)
 
 				case "After":
@@ -152,16 +155,16 @@ func run(pass *analysis.Pass) (interface{}, error) {
 					if hasClockInterface {
 						suggestion = "use the Clock.After() method instead"
 					}
-					pass.Reportf(call.Pos(),
+					reporter.Reportf(call.Pos(),
 						"direct time.After() call; %s", suggestion)
 
 				case "Sleep":
-					pass.Reportf(call.Pos(),
+					reporter.Reportf(call.Pos(),
 						"time.Sleep() in business logic is usually a code smell; "+
 							"consider using context with timeout, ticker, or returning a requeue duration")
 
 				case "NewTicker", "NewTimer":
-					pass.Reportf(call.Pos(),
+					reporter.Reportf(call.Pos(),
 						"direct time.%s() call; consider abstracting time operations for testability",
 						sel.Sel.Name)
 				}

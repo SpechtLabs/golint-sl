@@ -15,6 +15,8 @@ import (
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/analysis/passes/inspect"
 	"golang.org/x/tools/go/ast/inspector"
+
+	"github.com/spechtlabs/golint-sl/internal/nolint"
 )
 
 const Doc = `enforce humane-errors-go usage with mandatory advice
@@ -39,6 +41,13 @@ const (
 	humanePackage = "github.com/sierrasoftworks/humane-errors-go"
 	humaneAlias   = "humane"
 )
+
+// commonHumaneIdentifiers are identifier names commonly used for the humane package
+var commonHumaneIdentifiers = map[string]bool{
+	"humane":  true,
+	"herrors": true,
+	"he":      true,
+}
 
 // stdlibInterfaceMethods lists method signatures that are required by standard library
 // interfaces and must return plain `error`. We exempt these from humane.Error requirements.
@@ -131,6 +140,7 @@ var stdlibInterfaceMethods = map[string]bool{
 }
 
 func run(pass *analysis.Pass) (interface{}, error) {
+	reporter := nolint.NewReporter(pass)
 	inspect := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
 
 	// Track imports to understand package aliases
@@ -169,11 +179,11 @@ func run(pass *analysis.Pass) (interface{}, error) {
 					mustReturnPlainError: isFrameworkCallback(node.Name.Name),
 				}
 			}
-			checkFuncReturnsHumaneError(pass, node, imports)
+			checkFuncReturnsHumaneError(reporter, node, imports)
 
 		case *ast.CallExpr:
-			checkHumaneCallHasAdvice(pass, node, imports)
-			checkForbiddenErrorCalls(pass, node, imports)
+			checkHumaneCallHasAdvice(reporter, node, imports)
+			checkForbiddenErrorCalls(reporter, node, imports)
 		}
 	})
 
@@ -182,7 +192,7 @@ func run(pass *analysis.Pass) (interface{}, error) {
 
 // checkFuncReturnsHumaneError verifies that exported functions returning error
 // use humane.Error instead of the plain error interface
-func checkFuncReturnsHumaneError(pass *analysis.Pass, fn *ast.FuncDecl, _ map[string]string) {
+func checkFuncReturnsHumaneError(reporter *nolint.Reporter, fn *ast.FuncDecl, _ map[string]string) {
 	// Only check exported functions (capitalized names)
 	if fn.Name == nil || !ast.IsExported(fn.Name.Name) {
 		return
@@ -207,7 +217,7 @@ func checkFuncReturnsHumaneError(pass *analysis.Pass, fn *ast.FuncDecl, _ map[st
 		// Check if return type is the plain "error" interface
 		if ident, ok := result.Type.(*ast.Ident); ok {
 			if ident.Name == "error" {
-				pass.Reportf(result.Pos(),
+				reporter.Reportf(result.Pos(),
 					"exported function %q returns plain 'error'; use 'humane.Error' from %s instead to provide actionable advice",
 					fn.Name.Name, humanePackage)
 			}
@@ -239,7 +249,7 @@ func isStdlibInterfaceMethod(fn *ast.FuncDecl) bool {
 }
 
 // checkHumaneCallHasAdvice ensures humane.New() and humane.Wrap() include advice
-func checkHumaneCallHasAdvice(pass *analysis.Pass, call *ast.CallExpr, imports map[string]string) {
+func checkHumaneCallHasAdvice(reporter *nolint.Reporter, call *ast.CallExpr, imports map[string]string) {
 	sel, ok := call.Fun.(*ast.SelectorExpr)
 	if !ok {
 		return
@@ -251,28 +261,46 @@ func checkHumaneCallHasAdvice(pass *analysis.Pass, call *ast.CallExpr, imports m
 	}
 
 	// Check if this is a call to the humane package
+	// We use multiple detection strategies:
+	// 1. Check if the identifier matches a known humane import alias
+	// 2. Check if the identifier is "humane" and function is New/Wrap (common pattern)
+	isHumaneCall := false
+
+	// Strategy 1: Match against tracked imports
 	humaneLocalName := imports[humanePackage]
 	if humaneLocalName == "" {
-		// Try common aliases
+		// Try common aliases - check if any import path contains humane-errors
 		for path, name := range imports {
-			if strings.Contains(path, "humane-errors") {
+			if strings.Contains(path, "humane-errors") || strings.Contains(path, "humane") {
 				humaneLocalName = name
 				break
 			}
 		}
 	}
 
-	if humaneLocalName == "" || ident.Name != humaneLocalName {
-		return
+	if humaneLocalName != "" && ident.Name == humaneLocalName {
+		isHumaneCall = true
 	}
 
+	// Strategy 2: If identifier is a common humane alias and calling New/Wrap,
+	// this is almost certainly the humane package (even if import path detection failed)
+	// This handles cases where:
+	// - import "github.com/sierrasoftworks/humane-errors-go" (package declares `package humane`)
+	// - The Go compiler uses the package name, not the last path component
 	funcName := sel.Sel.Name
+	if commonHumaneIdentifiers[ident.Name] && (funcName == "New" || funcName == "Wrap") {
+		isHumaneCall = true
+	}
+
+	if !isHumaneCall {
+		return
+	}
 
 	switch funcName {
 	case "New":
 		// humane.New(message string, advice ...string) requires at least 2 args for advice
 		if len(call.Args) < 2 {
-			pass.Reportf(call.Pos(),
+			reporter.Reportf(call.Pos(),
 				"humane.New() should include at least one advice string: humane.New(message, advice1, advice2, ...)")
 		}
 		// Note: With exactly 2 args, the call has minimum advice. Multiple advice
@@ -281,17 +309,17 @@ func checkHumaneCallHasAdvice(pass *analysis.Pass, call *ast.CallExpr, imports m
 	case "Wrap":
 		// humane.Wrap(err, message string, advice ...string) requires at least 3 args for advice
 		if len(call.Args) < 3 {
-			pass.Reportf(call.Pos(),
+			reporter.Reportf(call.Pos(),
 				"humane.Wrap() should include at least one advice string: humane.Wrap(err, message, advice1, ...)")
 		}
 	}
 
 	// Check advice string quality (should be actionable)
-	checkAdviceQuality(pass, call, funcName)
+	checkAdviceQuality(reporter, call, funcName)
 }
 
 // checkAdviceQuality verifies that advice strings are actionable
-func checkAdviceQuality(pass *analysis.Pass, call *ast.CallExpr, funcName string) {
+func checkAdviceQuality(reporter *nolint.Reporter, call *ast.CallExpr, funcName string) {
 	startIdx := 1 // For New(), advice starts at index 1
 	if funcName == "Wrap" {
 		startIdx = 2 // For Wrap(), advice starts at index 2
@@ -318,7 +346,7 @@ func checkAdviceQuality(pass *analysis.Pass, call *ast.CallExpr, funcName string
 
 		for _, pattern := range nonActionablePatterns {
 			if strings.Contains(adviceLower, pattern) && len(advice) < 50 {
-				pass.Reportf(lit.Pos(),
+				reporter.Reportf(lit.Pos(),
 					"advice %q may not be actionable; provide specific steps the user can take to resolve the issue",
 					advice)
 				break
@@ -344,7 +372,7 @@ var currentFunc funcContext
 
 // checkForbiddenErrorCalls flags direct use of errors.New and fmt.Errorf
 // but exempts framework callbacks where plain error is required
-func checkForbiddenErrorCalls(pass *analysis.Pass, call *ast.CallExpr, _ map[string]string) {
+func checkForbiddenErrorCalls(reporter *nolint.Reporter, call *ast.CallExpr, _ map[string]string) {
 	sel, ok := call.Fun.(*ast.SelectorExpr)
 	if !ok {
 		return
@@ -361,7 +389,7 @@ func checkForbiddenErrorCalls(pass *analysis.Pass, call *ast.CallExpr, _ map[str
 	// because you should at least wrap with context
 	if ident.Name == "errors" && funcName == "New" {
 		// Allow in test files implicitly (they often use errors.New for test cases)
-		pass.Reportf(call.Pos(),
+		reporter.Reportf(call.Pos(),
 			"avoid errors.New(); use humane.New(message, advice...) to provide actionable guidance")
 	}
 
@@ -370,7 +398,7 @@ func checkForbiddenErrorCalls(pass *analysis.Pass, call *ast.CallExpr, _ map[str
 		// Allow fmt.Errorf in functions that must return plain error
 		// (framework callbacks, interface implementations)
 		if !currentFunc.mustReturnPlainError {
-			pass.Reportf(call.Pos(),
+			reporter.Reportf(call.Pos(),
 				"avoid fmt.Errorf(); use humane.Wrap(err, message, advice...) or humane.New(message, advice...) instead")
 		}
 	}

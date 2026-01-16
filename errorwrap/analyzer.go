@@ -10,6 +10,8 @@ import (
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/analysis/passes/inspect"
 	"golang.org/x/tools/go/ast/inspector"
+
+	"github.com/spechtlabs/golint-sl/internal/nolint"
 )
 
 const Doc = `detect bare error returns without context
@@ -33,6 +35,7 @@ var Analyzer = &analysis.Analyzer{
 }
 
 func run(pass *analysis.Pass) (interface{}, error) {
+	reporter := nolint.NewReporter(pass)
 	inspect := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
 
 	nodeFilter := []ast.Node{
@@ -55,13 +58,13 @@ func run(pass *analysis.Pass) (interface{}, error) {
 			return
 		}
 
-		checkFunction(pass, fn)
+		checkFunction(reporter, fn)
 	})
 
 	return nil, nil
 }
 
-func checkFunction(pass *analysis.Pass, fn *ast.FuncDecl) {
+func checkFunction(reporter *nolint.Reporter, fn *ast.FuncDecl) {
 	// Track error assignments and their positions
 	errorAssignments := make(map[string]token.Pos)
 	errorWrapped := make(map[string]bool)
@@ -83,7 +86,7 @@ func checkFunction(pass *analysis.Pass, fn *ast.FuncDecl) {
 			}
 
 		case *ast.ReturnStmt:
-			checkBareErrorReturn(pass, node, fn, errorAssignments, errorWrapped)
+			checkBareErrorReturn(reporter, node, fn, errorAssignments, errorWrapped)
 		}
 		return true
 	})
@@ -146,7 +149,7 @@ func isErrorWrap(call *ast.CallExpr) bool {
 	return false
 }
 
-func checkBareErrorReturn(pass *analysis.Pass, ret *ast.ReturnStmt, fn *ast.FuncDecl, errorAssignments map[string]token.Pos, errorWrapped map[string]bool) {
+func checkBareErrorReturn(reporter *nolint.Reporter, ret *ast.ReturnStmt, fn *ast.FuncDecl, errorAssignments map[string]token.Pos, errorWrapped map[string]bool) {
 	if ret.Results == nil {
 		return
 	}
@@ -178,7 +181,7 @@ func checkBareErrorReturn(pass *analysis.Pass, ret *ast.ReturnStmt, fn *ast.Func
 		// This is a bare error return
 		// Only report if the function has meaningful operations (not just wrapping another call)
 		if hasMultipleOperations(fn) {
-			pass.Reportf(ret.Pos(),
+			reporter.Reportf(ret.Pos(),
 				"returning error %q without wrapping; add context with fmt.Errorf(\"operation: %%w\", %s) or humane.Wrap()",
 				ident.Name, ident.Name)
 		}

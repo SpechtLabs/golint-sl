@@ -9,6 +9,8 @@ import (
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/analysis/passes/inspect"
 	"golang.org/x/tools/go/ast/inspector"
+
+	"github.com/spechtlabs/golint-sl/internal/nolint"
 )
 
 const Doc = `enforce http.Client best practices
@@ -30,6 +32,7 @@ var Analyzer = &analysis.Analyzer{
 }
 
 func run(pass *analysis.Pass) (interface{}, error) {
+	reporter := nolint.NewReporter(pass)
 	inspect := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
 
 	nodeFilter := []ast.Node{
@@ -41,11 +44,11 @@ func run(pass *analysis.Pass) (interface{}, error) {
 	inspect.Preorder(nodeFilter, func(n ast.Node) {
 		switch node := n.(type) {
 		case *ast.CompositeLit:
-			checkClientLiteral(pass, node)
+			checkClientLiteral(reporter, pass, node)
 		case *ast.CallExpr:
-			checkDirectHTTPCalls(pass, node)
+			checkDirectHTTPCalls(reporter, node)
 		case *ast.SelectorExpr:
-			checkDefaultClient(pass, node)
+			checkDefaultClient(reporter, node)
 		}
 	})
 
@@ -53,7 +56,7 @@ func run(pass *analysis.Pass) (interface{}, error) {
 }
 
 // checkClientLiteral detects http.Client{} without Timeout
-func checkClientLiteral(pass *analysis.Pass, lit *ast.CompositeLit) {
+func checkClientLiteral(reporter *nolint.Reporter, pass *analysis.Pass, lit *ast.CompositeLit) {
 	// Check if this is an http.Client composite literal
 	if !isHTTPClientType(pass, lit.Type) {
 		return
@@ -82,7 +85,7 @@ func checkClientLiteral(pass *analysis.Pass, lit *ast.CompositeLit) {
 	}
 
 	if !hasTimeout {
-		pass.Reportf(lit.Pos(),
+		reporter.Reportf(lit.Pos(),
 			"http.Client without Timeout will wait forever; always set Timeout (e.g., 30*time.Second)")
 	}
 
@@ -136,7 +139,7 @@ func isHTTPClientAST(expr ast.Expr) bool {
 }
 
 // checkDirectHTTPCalls detects http.Get, http.Post, etc.
-func checkDirectHTTPCalls(pass *analysis.Pass, call *ast.CallExpr) {
+func checkDirectHTTPCalls(reporter *nolint.Reporter, call *ast.CallExpr) {
 	sel, ok := call.Fun.(*ast.SelectorExpr)
 	if !ok {
 		return
@@ -160,12 +163,12 @@ func checkDirectHTTPCalls(pass *analysis.Pass, call *ast.CallExpr) {
 	}
 
 	if msg, found := directCalls[sel.Sel.Name]; found {
-		pass.Reportf(call.Pos(), "%s", msg)
+		reporter.Reportf(call.Pos(), "%s", msg)
 	}
 }
 
 // checkDefaultClient detects http.DefaultClient usage
-func checkDefaultClient(pass *analysis.Pass, sel *ast.SelectorExpr) {
+func checkDefaultClient(reporter *nolint.Reporter, sel *ast.SelectorExpr) {
 	if sel.Sel.Name != "DefaultClient" {
 		return
 	}
@@ -176,7 +179,7 @@ func checkDefaultClient(pass *analysis.Pass, sel *ast.SelectorExpr) {
 	}
 
 	if ident.Name == "http" {
-		pass.Reportf(sel.Pos(),
+		reporter.Reportf(sel.Pos(),
 			"http.DefaultClient has no timeout and is shared globally; create your own http.Client with Timeout")
 	}
 }

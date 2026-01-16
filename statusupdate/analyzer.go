@@ -10,6 +10,8 @@ import (
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/analysis/passes/inspect"
 	"golang.org/x/tools/go/ast/inspector"
+
+	"github.com/spechtlabs/golint-sl/internal/nolint"
 )
 
 const Doc = `ensure reconcilers update Status after changes
@@ -31,6 +33,7 @@ var Analyzer = &analysis.Analyzer{
 }
 
 func run(pass *analysis.Pass) (interface{}, error) {
+	reporter := nolint.NewReporter(pass)
 	inspect := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
 
 	nodeFilter := []ast.Node{
@@ -47,7 +50,7 @@ func run(pass *analysis.Pass) (interface{}, error) {
 			return
 		}
 
-		checkReconcilerStatus(pass, fn)
+		checkReconcilerStatus(reporter, fn)
 	})
 
 	return nil, nil
@@ -75,7 +78,7 @@ func isReconcileFunction(fn *ast.FuncDecl) bool {
 	return false
 }
 
-func checkReconcilerStatus(pass *analysis.Pass, fn *ast.FuncDecl) {
+func checkReconcilerStatus(reporter *nolint.Reporter, fn *ast.FuncDecl) {
 	hasResourceMutation := false
 	hasStatusUpdate := false
 	hasConditionUpdate := false
@@ -161,13 +164,13 @@ func checkReconcilerStatus(pass *analysis.Pass, fn *ast.FuncDecl) {
 
 	// Report issues
 	if hasResourceMutation && !hasStatusUpdate {
-		pass.Reportf(fn.Pos(),
+		reporter.Reportf(fn.Pos(),
 			"reconciler mutates resources but doesn't update Status; use Status().Update() to reflect current state")
 	}
 
 	// Only warn about missing conditions if there's complex logic
 	if hasResourceMutation && !hasConditionUpdate && hasComplexLogic(fn) {
-		pass.Reportf(fn.Pos(),
+		reporter.Reportf(fn.Pos(),
 			"reconciler performs mutations but doesn't update Status.Conditions; consider using conditions to report state")
 	}
 }

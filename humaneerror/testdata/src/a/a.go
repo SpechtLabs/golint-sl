@@ -56,3 +56,21 @@ func UsingFmtErrorf() error { // want `exported function "UsingFmtErrorf" return
 func TestSomething() error {
 	return errors.New("test error") // want `avoid errors.New\(\); use humane.New`
 }
+
+// Bad: humane.Wrap with only error message, no advice (common mistake)
+func BadWrapNoAdvice(e error) humane.Error {
+	return humane.Wrap(e, "Failed to parse validityPeriod") // want `humane.Wrap\(\) should include at least one advice string`
+}
+
+// Good: humane.Wrap with proper advice
+func GoodWrapWithAdvice(e error) humane.Error {
+	return humane.Wrap(e, "Failed to parse validityPeriod", "Ensure the validity period is in ISO 8601 format (e.g., P1Y for 1 year)")
+}
+
+// Bad: Multiple Wrap calls without advice in same function
+func MultipleBadWraps(e error) humane.Error {
+	if e != nil {
+		return humane.Wrap(e, "first error") // want `humane.Wrap\(\) should include at least one advice string`
+	}
+	return humane.Wrap(e, "second error") // want `humane.Wrap\(\) should include at least one advice string`
+}

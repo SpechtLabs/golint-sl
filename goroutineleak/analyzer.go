@@ -16,6 +16,8 @@ import (
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/analysis/passes/inspect"
 	"golang.org/x/tools/go/ast/inspector"
+
+	"github.com/spechtlabs/golint-sl/internal/nolint"
 )
 
 const Doc = `detect goroutines that may leak
@@ -65,6 +67,7 @@ var Analyzer = &analysis.Analyzer{
 }
 
 func run(pass *analysis.Pass) (interface{}, error) {
+	reporter := nolint.NewReporter(pass)
 	inspect := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
 
 	nodeFilter := []ast.Node{
@@ -81,7 +84,7 @@ func run(pass *analysis.Pass) (interface{}, error) {
 			currentFuncHasContext = hasContextParam(node)
 
 		case *ast.GoStmt:
-			checkGoroutine(pass, node, currentFuncHasContext)
+			checkGoroutine(reporter, node, currentFuncHasContext)
 		}
 	})
 
@@ -102,7 +105,7 @@ func hasContextParam(fn *ast.FuncDecl) bool {
 	return false
 }
 
-func checkGoroutine(pass *analysis.Pass, goStmt *ast.GoStmt, parentHasContext bool) {
+func checkGoroutine(reporter *nolint.Reporter, goStmt *ast.GoStmt, parentHasContext bool) {
 	// Get the function being called in the go statement
 	var funcLit *ast.FuncLit
 	switch call := goStmt.Call.Fun.(type) {
@@ -165,12 +168,12 @@ func checkGoroutine(pass *analysis.Pass, goStmt *ast.GoStmt, parentHasContext bo
 
 	// Report issues
 	if hasInfiniteLoop && !hasContextCheck && !hasDoneChannel {
-		pass.Reportf(goStmt.Pos(),
+		reporter.Reportf(goStmt.Pos(),
 			"goroutine with infinite loop has no way to stop; add select with <-ctx.Done() or done channel")
 	}
 
 	if !hasContextCheck && !hasWaitGroupDone && !hasDoneChannel && parentHasContext {
-		pass.Reportf(goStmt.Pos(),
+		reporter.Reportf(goStmt.Pos(),
 			"goroutine spawned without cleanup mechanism; consider passing context and checking ctx.Done(), or use sync.WaitGroup")
 	}
 

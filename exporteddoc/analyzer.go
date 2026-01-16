@@ -11,6 +11,8 @@ import (
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/analysis/passes/inspect"
 	"golang.org/x/tools/go/ast/inspector"
+
+	"github.com/spechtlabs/golint-sl/internal/nolint"
 )
 
 const Doc = `ensure exported symbols have documentation comments
@@ -39,6 +41,7 @@ var Analyzer = &analysis.Analyzer{
 }
 
 func run(pass *analysis.Pass) (interface{}, error) {
+	reporter := nolint.NewReporter(pass)
 	inspect := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
 
 	// Skip test files
@@ -60,20 +63,20 @@ func run(pass *analysis.Pass) (interface{}, error) {
 			if inTestFile {
 				return
 			}
-			checkFuncDoc(pass, node)
+			checkFuncDoc(reporter, node)
 
 		case *ast.GenDecl:
 			if inTestFile {
 				return
 			}
-			checkGenDecl(pass, node)
+			checkGenDecl(reporter, node)
 		}
 	})
 
 	return nil, nil
 }
 
-func checkFuncDoc(pass *analysis.Pass, fn *ast.FuncDecl) {
+func checkFuncDoc(reporter *nolint.Reporter, fn *ast.FuncDecl) {
 	// Only check exported functions
 	if !ast.IsExported(fn.Name.Name) {
 		return
@@ -85,7 +88,7 @@ func checkFuncDoc(pass *analysis.Pass, fn *ast.FuncDecl) {
 	}
 
 	if fn.Doc == nil || len(fn.Doc.List) == 0 {
-		pass.Reportf(fn.Pos(),
+		reporter.Reportf(fn.Pos(),
 			"exported function %s should have a documentation comment",
 			fn.Name.Name)
 		return
@@ -94,13 +97,13 @@ func checkFuncDoc(pass *analysis.Pass, fn *ast.FuncDecl) {
 	// Check that doc starts with function name
 	firstLine := fn.Doc.List[0].Text
 	if !strings.HasPrefix(firstLine, "// "+fn.Name.Name) {
-		pass.Reportf(fn.Doc.Pos(),
+		reporter.Reportf(fn.Doc.Pos(),
 			"documentation for %s should start with %q",
 			fn.Name.Name, fn.Name.Name)
 	}
 }
 
-func checkGenDecl(pass *analysis.Pass, decl *ast.GenDecl) {
+func checkGenDecl(reporter *nolint.Reporter, decl *ast.GenDecl) {
 	for _, spec := range decl.Specs {
 		switch s := spec.(type) {
 		case *ast.TypeSpec:
@@ -115,7 +118,7 @@ func checkGenDecl(pass *analysis.Pass, decl *ast.GenDecl) {
 			}
 
 			if doc == nil || len(doc.List) == 0 {
-				pass.Reportf(s.Pos(),
+				reporter.Reportf(s.Pos(),
 					"exported type %s should have a documentation comment",
 					s.Name.Name)
 				continue
@@ -124,7 +127,7 @@ func checkGenDecl(pass *analysis.Pass, decl *ast.GenDecl) {
 			// Check that doc starts with type name
 			firstLine := doc.List[0].Text
 			if !strings.HasPrefix(firstLine, "// "+s.Name.Name) {
-				pass.Reportf(doc.Pos(),
+				reporter.Reportf(doc.Pos(),
 					"documentation for %s should start with %q",
 					s.Name.Name, s.Name.Name)
 			}
@@ -147,7 +150,7 @@ func checkGenDecl(pass *analysis.Pass, decl *ast.GenDecl) {
 				}
 
 				if doc == nil || len(doc.List) == 0 {
-					pass.Reportf(name.Pos(),
+					reporter.Reportf(name.Pos(),
 						"exported variable %s should have a documentation comment",
 						name.Name)
 				}

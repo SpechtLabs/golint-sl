@@ -14,6 +14,8 @@ import (
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/analysis/passes/inspect"
 	"golang.org/x/tools/go/ast/inspector"
+
+	"github.com/spechtlabs/golint-sl/internal/nolint"
 )
 
 const Doc = `enforce Kubernetes reconciler best practices
@@ -43,6 +45,7 @@ type ReconcileFunc struct {
 }
 
 func run(pass *analysis.Pass) (interface{}, error) {
+	reporter := nolint.NewReporter(pass)
 	inspect := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
 
 	nodeFilter := []ast.Node{
@@ -60,16 +63,16 @@ func run(pass *analysis.Pass) (interface{}, error) {
 		}
 
 		// Check reconcile function signature
-		checkReconcileSignature(pass, fn)
+		checkReconcileSignature(reporter, fn)
 
 		// Check for forbidden patterns in reconciler
-		checkReconcilerBody(pass, fn)
+		checkReconcilerBody(reporter, fn)
 
 		// Check error handling patterns
-		checkErrorHandling(pass, fn)
+		checkErrorHandling(reporter, fn)
 
 		// Check for proper logging
-		checkLoggingPatterns(pass, fn)
+		checkLoggingPatterns(reporter, fn)
 	})
 
 	return nil, nil
@@ -107,33 +110,33 @@ func isReconcileFunction(fn *ast.FuncDecl) bool {
 }
 
 // checkReconcileSignature verifies the Reconcile function has correct signature
-func checkReconcileSignature(pass *analysis.Pass, fn *ast.FuncDecl) {
+func checkReconcileSignature(reporter *nolint.Reporter, fn *ast.FuncDecl) {
 	if fn.Type.Results == nil {
-		pass.Reportf(fn.Pos(), "Reconcile function must return (reconcile.Result, error)")
+		reporter.Reportf(fn.Pos(), "Reconcile function must return (reconcile.Result, error)")
 		return
 	}
 
 	results := fn.Type.Results.List
 	if len(results) != 2 {
-		pass.Reportf(fn.Pos(), "Reconcile function must return exactly 2 values: (reconcile.Result, error)")
+		reporter.Reportf(fn.Pos(), "Reconcile function must return exactly 2 values: (reconcile.Result, error)")
 		return
 	}
 
 	// Check first return type is Result
 	firstType := types.ExprString(results[0].Type)
 	if !strings.Contains(firstType, "Result") {
-		pass.Reportf(results[0].Pos(), "first return type should be reconcile.Result, got %s", firstType)
+		reporter.Reportf(results[0].Pos(), "first return type should be reconcile.Result, got %s", firstType)
 	}
 
 	// Check second return type is error
 	secondType := types.ExprString(results[1].Type)
 	if secondType != "error" {
-		pass.Reportf(results[1].Pos(), "second return type should be error, got %s", secondType)
+		reporter.Reportf(results[1].Pos(), "second return type should be error, got %s", secondType)
 	}
 
 	// Check parameters
 	if fn.Type.Params == nil || len(fn.Type.Params.List) < 2 {
-		pass.Reportf(fn.Pos(), "Reconcile function should have at least (ctx context.Context, req reconcile.Request) parameters")
+		reporter.Reportf(fn.Pos(), "Reconcile function should have at least (ctx context.Context, req reconcile.Request) parameters")
 		return
 	}
 
@@ -141,12 +144,12 @@ func checkReconcileSignature(pass *analysis.Pass, fn *ast.FuncDecl) {
 	firstParam := fn.Type.Params.List[0]
 	firstParamType := types.ExprString(firstParam.Type)
 	if !strings.Contains(firstParamType, "Context") {
-		pass.Reportf(firstParam.Pos(), "first parameter should be context.Context")
+		reporter.Reportf(firstParam.Pos(), "first parameter should be context.Context")
 	}
 }
 
 // checkReconcilerBody looks for forbidden patterns in reconciler body
-func checkReconcilerBody(pass *analysis.Pass, fn *ast.FuncDecl) {
+func checkReconcilerBody(reporter *nolint.Reporter, fn *ast.FuncDecl) {
 	if fn.Body == nil {
 		return
 	}
@@ -157,16 +160,16 @@ func checkReconcilerBody(pass *analysis.Pass, fn *ast.FuncDecl) {
 			return true
 		}
 
-		checkForbiddenCalls(pass, call)
-		checkTimeNow(pass, call)
-		checkGlobalAccess(pass, call)
+		checkForbiddenCalls(reporter, call)
+		checkTimeNow(reporter, call)
+		checkGlobalAccess(reporter, call)
 
 		return true
 	})
 }
 
 // checkForbiddenCalls detects calls that shouldn't be in reconcilers
-func checkForbiddenCalls(pass *analysis.Pass, call *ast.CallExpr) {
+func checkForbiddenCalls(reporter *nolint.Reporter, call *ast.CallExpr) {
 	sel, ok := call.Fun.(*ast.SelectorExpr)
 	if !ok {
 		return
@@ -185,7 +188,7 @@ func checkForbiddenCalls(pass *analysis.Pass, call *ast.CallExpr) {
 		httpMethods := []string{"Get", "Post", "Head", "Put", "Delete", "Do", "NewRequest"}
 		for _, method := range httpMethods {
 			if funcName == method {
-				pass.Reportf(call.Pos(),
+				reporter.Reportf(call.Pos(),
 					"reconciler should not make HTTP calls directly; use an injected HTTP client interface or service abstraction")
 			}
 		}
@@ -196,7 +199,7 @@ func checkForbiddenCalls(pass *analysis.Pass, call *ast.CallExpr) {
 		sqlMethods := []string{"Query", "QueryRow", "Exec", "Begin", "Prepare"}
 		for _, method := range sqlMethods {
 			if funcName == method {
-				pass.Reportf(call.Pos(),
+				reporter.Reportf(call.Pos(),
 					"reconciler should not access database directly; use repository pattern")
 			}
 		}
@@ -204,13 +207,13 @@ func checkForbiddenCalls(pass *analysis.Pass, call *ast.CallExpr) {
 
 	// Sleep calls (reconcilers should use requeue instead)
 	if pkg == "time" && funcName == "Sleep" {
-		pass.Reportf(call.Pos(),
+		reporter.Reportf(call.Pos(),
 			"reconciler should not use time.Sleep; use Result{RequeueAfter: duration} instead")
 	}
 }
 
 // checkTimeNow flags direct time.Now() usage in reconcilers
-func checkTimeNow(pass *analysis.Pass, call *ast.CallExpr) {
+func checkTimeNow(reporter *nolint.Reporter, call *ast.CallExpr) {
 	sel, ok := call.Fun.(*ast.SelectorExpr)
 	if !ok {
 		return
@@ -224,13 +227,13 @@ func checkTimeNow(pass *analysis.Pass, call *ast.CallExpr) {
 	if ident.Name == "time" && sel.Sel.Name == "Now" {
 		// This is informational - sometimes time.Now is needed
 		// but it can make testing harder
-		pass.Reportf(call.Pos(),
+		reporter.Reportf(call.Pos(),
 			"consider injecting a clock interface for time.Now() to improve testability")
 	}
 }
 
 // checkGlobalAccess looks for global variable access
-func checkGlobalAccess(pass *analysis.Pass, call *ast.CallExpr) {
+func checkGlobalAccess(reporter *nolint.Reporter, call *ast.CallExpr) {
 	// Check for sync.Mutex Lock/Unlock on package-level variables
 	sel, ok := call.Fun.(*ast.SelectorExpr)
 	if !ok {
@@ -239,13 +242,13 @@ func checkGlobalAccess(pass *analysis.Pass, call *ast.CallExpr) {
 
 	if sel.Sel.Name == "Lock" || sel.Sel.Name == "Unlock" {
 		// This could indicate shared state
-		pass.Reportf(call.Pos(),
+		reporter.Reportf(call.Pos(),
 			"reconciler using mutex may indicate shared state; consider using controller-runtime's built-in concurrency model")
 	}
 }
 
 // checkErrorHandling ensures proper error handling patterns
-func checkErrorHandling(pass *analysis.Pass, fn *ast.FuncDecl) {
+func checkErrorHandling(reporter *nolint.Reporter, fn *ast.FuncDecl) {
 	if fn.Body == nil {
 		return
 	}
@@ -295,13 +298,13 @@ func checkErrorHandling(pass *analysis.Pass, fn *ast.FuncDecl) {
 	})
 
 	if hasClientGet && !hasNotFoundCheck {
-		pass.Reportf(fn.Pos(),
+		reporter.Reportf(fn.Pos(),
 			"reconciler does client.Get but doesn't check for IsNotFound; not-found errors should return nil (no requeue)")
 	}
 }
 
 // checkLoggingPatterns ensures structured logging is used
-func checkLoggingPatterns(pass *analysis.Pass, fn *ast.FuncDecl) {
+func checkLoggingPatterns(reporter *nolint.Reporter, fn *ast.FuncDecl) {
 	if fn.Body == nil {
 		return
 	}
@@ -322,13 +325,13 @@ func checkLoggingPatterns(pass *analysis.Pass, fn *ast.FuncDecl) {
 		// Check for fmt.Printf/Println in reconcilers
 		if ident, ok := sel.X.(*ast.Ident); ok {
 			if ident.Name == "fmt" && (funcName == "Printf" || funcName == "Println" || funcName == "Print") {
-				pass.Reportf(call.Pos(),
+				reporter.Reportf(call.Pos(),
 					"use structured logging (zap, logr) instead of fmt.Print* in reconcilers")
 			}
 
 			// Check for log.Print* (standard library logger)
 			if ident.Name == "log" && strings.HasPrefix(funcName, "Print") {
-				pass.Reportf(call.Pos(),
+				reporter.Reportf(call.Pos(),
 					"use structured logging (zap, logr) instead of log.Print* in reconcilers")
 			}
 		}

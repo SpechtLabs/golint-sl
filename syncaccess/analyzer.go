@@ -11,6 +11,8 @@ import (
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/analysis/passes/inspect"
 	"golang.org/x/tools/go/ast/inspector"
+
+	"github.com/spechtlabs/golint-sl/internal/nolint"
 )
 
 const Doc = `detect potential data races and synchronization issues
@@ -55,6 +57,7 @@ var Analyzer = &analysis.Analyzer{
 }
 
 func run(pass *analysis.Pass) (interface{}, error) {
+	reporter := nolint.NewReporter(pass)
 	inspect := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
 
 	// Track struct types with mutex fields
@@ -71,10 +74,10 @@ func run(pass *analysis.Pass) (interface{}, error) {
 		switch node := n.(type) {
 		case *ast.FuncDecl:
 			currentFunc = node
-			checkMutexUsage(pass, node, structsWithMutex)
+			checkMutexUsage(reporter, node, structsWithMutex)
 
 		case *ast.GoStmt:
-			checkGoroutineCaptures(pass, node, currentFunc)
+			checkGoroutineCaptures(reporter, pass, node, currentFunc)
 		}
 	})
 
@@ -113,7 +116,7 @@ func findStructsWithMutex(pass *analysis.Pass) map[string]bool {
 }
 
 // checkGoroutineCaptures checks for variables captured by goroutines
-func checkGoroutineCaptures(pass *analysis.Pass, goStmt *ast.GoStmt, currentFunc *ast.FuncDecl) {
+func checkGoroutineCaptures(reporter *nolint.Reporter, pass *analysis.Pass, goStmt *ast.GoStmt, currentFunc *ast.FuncDecl) {
 	funcLit, ok := goStmt.Call.Fun.(*ast.FuncLit)
 	if !ok {
 		return
@@ -129,7 +132,7 @@ func checkGoroutineCaptures(pass *analysis.Pass, goStmt *ast.GoStmt, currentFunc
 	for varName, varInfo := range capturedVars {
 		// Check if it's a loop variable (common bug)
 		if isLoopVariable(currentFunc, varName, goStmt) {
-			pass.Reportf(varInfo.pos,
+			reporter.Reportf(varInfo.pos,
 				"loop variable %q captured by goroutine; this may cause unexpected behavior - pass as parameter instead",
 				varName)
 			continue
@@ -138,7 +141,7 @@ func checkGoroutineCaptures(pass *analysis.Pass, goStmt *ast.GoStmt, currentFunc
 		// Check for pointer/reference types that might be shared
 		if varInfo.isPointer || varInfo.isMap || varInfo.isSlice {
 			if !varInfo.isProtected {
-				pass.Reportf(varInfo.pos,
+				reporter.Reportf(varInfo.pos,
 					"shared variable %q captured by goroutine without synchronization; consider using mutex or channels",
 					varName)
 			}
@@ -325,7 +328,7 @@ func containsNode(parent ast.Node, target ast.Node) bool {
 }
 
 // checkMutexUsage checks that struct methods use mutex properly
-func checkMutexUsage(pass *analysis.Pass, fn *ast.FuncDecl, structsWithMutex map[string]bool) {
+func checkMutexUsage(reporter *nolint.Reporter, fn *ast.FuncDecl, structsWithMutex map[string]bool) {
 	if fn.Recv == nil || len(fn.Recv.List) == 0 {
 		return
 	}
@@ -384,7 +387,7 @@ func checkMutexUsage(pass *analysis.Pass, fn *ast.FuncDecl, structsWithMutex map
 
 	// If there's field access but no lock, warn
 	if hasFieldAccess && !hasLock {
-		pass.Reportf(fn.Pos(),
+		reporter.Reportf(fn.Pos(),
 			"method %q on type with mutex accesses fields without Lock(); consider adding synchronization",
 			fn.Name.Name)
 	}

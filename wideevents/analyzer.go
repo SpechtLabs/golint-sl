@@ -22,6 +22,8 @@ import (
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/analysis/passes/inspect"
 	"golang.org/x/tools/go/ast/inspector"
+
+	"github.com/spechtlabs/golint-sl/internal/nolint"
 )
 
 const Doc = `enforce wide event logging patterns instead of traditional logging
@@ -121,6 +123,7 @@ var requiredContextFields = []string{
 }
 
 func run(pass *analysis.Pass) (interface{}, error) {
+	reporter := nolint.NewReporter(pass)
 	inspect := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
 
 	nodeFilter := []ast.Node{
@@ -143,13 +146,13 @@ func run(pass *analysis.Pass) (interface{}, error) {
 			return
 		}
 
-		checkFunction(pass, fn)
+		checkFunction(reporter, fn)
 	})
 
 	return nil, nil
 }
 
-func checkFunction(pass *analysis.Pass, fn *ast.FuncDecl) {
+func checkFunction(reporter *nolint.Reporter, fn *ast.FuncDecl) {
 	var logCalls []*logCallInfo
 	var logsInLoops []*ast.CallExpr
 
@@ -171,7 +174,7 @@ func checkFunction(pass *analysis.Pass, fn *ast.FuncDecl) {
 
 		case *ast.CallExpr:
 			// Check banned patterns first
-			checkBannedLogPatterns(pass, node)
+			checkBannedLogPatterns(reporter, node)
 
 			// Analyze the log call
 			if info := analyzeLogCall(node); info != nil {
@@ -183,7 +186,7 @@ func checkFunction(pass *analysis.Pass, fn *ast.FuncDecl) {
 
 	// Report logs inside loops
 	for _, call := range logsInLoops {
-		pass.Reportf(call.Pos(),
+		reporter.Reportf(call.Pos(),
 			"logging inside loop creates log spam; accumulate data and emit one wide event after the loop")
 	}
 
@@ -196,7 +199,7 @@ func checkFunction(pass *analysis.Pass, fn *ast.FuncDecl) {
 	}
 
 	if nonDebugLogs > 1 {
-		pass.Reportf(fn.Pos(),
+		reporter.Reportf(fn.Pos(),
 			"function has %d log statements; consider emitting a single wide event at the end instead of scattered logs",
 			nonDebugLogs)
 	}
@@ -204,13 +207,13 @@ func checkFunction(pass *analysis.Pass, fn *ast.FuncDecl) {
 	// Check each log call for required context
 	for _, info := range logCalls {
 		if !info.isDebug && !info.hasStructuredFields {
-			pass.Reportf(info.call.Pos(),
+			reporter.Reportf(info.call.Pos(),
 				"log call without structured fields; use zap.String(\"field\", value) to add context for wide events")
 		}
 
 		// Check for traditional log methods that should be wide events
 		if info.isTraditionalLog && !info.isDebug {
-			checkWideEventContext(pass, info)
+			checkWideEventContext(reporter, info)
 		}
 	}
 }
@@ -322,18 +325,18 @@ func hasStructuredFields(call *ast.CallExpr) (bool, []string) {
 	return len(fieldNames) > 0, fieldNames
 }
 
-func checkBannedLogPatterns(pass *analysis.Pass, call *ast.CallExpr) {
+func checkBannedLogPatterns(reporter *nolint.Reporter, call *ast.CallExpr) {
 	callName := getCallName(call)
 	if callName == "" {
 		return
 	}
 
 	if msg, banned := bannedLogPatterns[callName]; banned {
-		pass.Reportf(call.Pos(), "%s", msg)
+		reporter.Reportf(call.Pos(), "%s", msg)
 	}
 }
 
-func checkWideEventContext(pass *analysis.Pass, info *logCallInfo) {
+func checkWideEventContext(reporter *nolint.Reporter, info *logCallInfo) {
 	// Check if the log has any of the required context fields
 	hasContext := false
 	for _, field := range info.fieldNames {
@@ -355,7 +358,7 @@ func checkWideEventContext(pass *analysis.Pass, info *logCallInfo) {
 	}
 
 	if !hasContext && len(info.fieldNames) > 0 {
-		pass.Reportf(info.call.Pos(),
+		reporter.Reportf(info.call.Pos(),
 			"wide event missing request context; add trace_id, request_id, or span_id for correlation")
 	}
 }

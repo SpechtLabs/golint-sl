@@ -16,6 +16,8 @@ import (
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/analysis/passes/inspect"
 	"golang.org/x/tools/go/ast/inspector"
+
+	"github.com/spechtlabs/golint-sl/internal/nolint"
 )
 
 const Doc = `enforce context-based logging patterns
@@ -71,6 +73,7 @@ var GlobalLoggerPatterns = []string{
 }
 
 func run(pass *analysis.Pass) (interface{}, error) {
+	reporter := nolint.NewReporter(pass)
 	inspect := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
 
 	nodeFilter := []ast.Node{
@@ -98,10 +101,10 @@ func run(pass *analysis.Pass) (interface{}, error) {
 		}
 
 		// Check for global logger usage
-		checkGlobalLoggerUsage(pass, fn)
+		checkGlobalLoggerUsage(reporter, fn)
 
 		// Check for logger passed as parameter (should use context instead)
-		checkLoggerParameter(pass, fn)
+		checkLoggerParameter(reporter, fn)
 	})
 
 	return nil, nil
@@ -124,7 +127,7 @@ func hasContextParameter(fn *ast.FuncDecl) bool {
 }
 
 // checkGlobalLoggerUsage detects usage of global logger when context is available
-func checkGlobalLoggerUsage(pass *analysis.Pass, fn *ast.FuncDecl) {
+func checkGlobalLoggerUsage(reporter *nolint.Reporter, fn *ast.FuncDecl) {
 	usesFromContext := false
 	var globalLoggerCalls []*ast.CallExpr
 
@@ -154,14 +157,14 @@ func checkGlobalLoggerUsage(pass *analysis.Pass, fn *ast.FuncDecl) {
 	// If context is available but global logger is used without FromContext
 	if !usesFromContext && len(globalLoggerCalls) > 0 {
 		for _, call := range globalLoggerCalls {
-			pass.Reportf(call.Pos(),
+			reporter.Reportf(call.Pos(),
 				"function has context parameter but uses global logger; use log.FromContext(ctx) instead")
 		}
 	}
 }
 
 // checkLoggerParameter detects logger passed as parameter (anti-pattern)
-func checkLoggerParameter(pass *analysis.Pass, fn *ast.FuncDecl) {
+func checkLoggerParameter(reporter *nolint.Reporter, fn *ast.FuncDecl) {
 	if fn.Type.Params == nil {
 		return
 	}
@@ -183,7 +186,7 @@ func checkLoggerParameter(pass *analysis.Pass, fn *ast.FuncDecl) {
 			if strings.Contains(paramType, pattern) {
 				// Check if context is also a parameter (which means logger should come from context)
 				if hasContextParameter(fn) {
-					pass.Reportf(param.Pos(),
+					reporter.Reportf(param.Pos(),
 						"logger passed as parameter alongside context; consider using log.FromContext(ctx) pattern instead")
 				}
 			}

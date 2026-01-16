@@ -12,6 +12,8 @@ import (
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/analysis/passes/buildssa"
 	"golang.org/x/tools/go/ssa"
+
+	"github.com/spechtlabs/golint-sl/internal/nolint"
 )
 
 const Doc = `detect unwanted side effects using SSA analysis
@@ -62,22 +64,23 @@ var defaultConfig = Config{
 }
 
 func run(pass *analysis.Pass) (interface{}, error) {
+	reporter := nolint.NewReporter(pass)
 	ssaInfo := pass.ResultOf[buildssa.Analyzer].(*buildssa.SSA)
 
 	for _, fn := range ssaInfo.SrcFuncs {
 		// Check if this is a reconciler function
 		if isReconcilerFunc(fn) {
-			checkReconcilerSideEffects(pass, fn)
+			checkReconcilerSideEffects(reporter, fn)
 		}
 
 		// Check if this function should be pure
 		if shouldBePure(fn) {
-			checkPureFunctionSideEffects(pass, fn)
+			checkPureFunctionSideEffects(reporter, fn)
 		}
 
 		// Check for global state mutations in handlers
 		if isHandlerFunc(fn) {
-			checkHandlerGlobalMutations(pass, fn)
+			checkHandlerGlobalMutations(reporter, fn)
 		}
 	}
 
@@ -116,7 +119,7 @@ func isReconcilerFunc(fn *ssa.Function) bool {
 }
 
 // checkReconcilerSideEffects analyzes a reconciler function for forbidden calls
-func checkReconcilerSideEffects(pass *analysis.Pass, fn *ssa.Function) {
+func checkReconcilerSideEffects(reporter *nolint.Reporter, fn *ssa.Function) {
 	// Walk all blocks in the function
 	for _, block := range fn.Blocks {
 		for _, instr := range block.Instrs {
@@ -135,7 +138,7 @@ func checkReconcilerSideEffects(pass *analysis.Pass, fn *ssa.Function) {
 			// Check against forbidden calls
 			for _, forbidden := range defaultConfig.ForbiddenCallsInReconcilers {
 				if strings.Contains(calleeName, forbidden) || matchesCallPattern(callee, forbidden) {
-					pass.Reportf(call.Pos(),
+					reporter.Reportf(call.Pos(),
 						"reconciler should not make direct %s call; use service layer abstraction",
 						forbidden)
 				}
@@ -143,13 +146,13 @@ func checkReconcilerSideEffects(pass *analysis.Pass, fn *ssa.Function) {
 
 			// Check for HTTP client usage
 			if isHTTPClientCall(callee) {
-				pass.Reportf(call.Pos(),
+				reporter.Reportf(call.Pos(),
 					"reconciler should not make HTTP calls directly; inject an HTTP client interface")
 			}
 
 			// Check for database calls
 			if isDatabaseCall(callee) {
-				pass.Reportf(call.Pos(),
+				reporter.Reportf(call.Pos(),
 					"reconciler should not access database directly; use repository pattern")
 			}
 		}
@@ -179,7 +182,7 @@ func shouldBePure(fn *ssa.Function) bool {
 }
 
 // checkPureFunctionSideEffects ensures pure functions don't have I/O side effects
-func checkPureFunctionSideEffects(pass *analysis.Pass, fn *ssa.Function) {
+func checkPureFunctionSideEffects(reporter *nolint.Reporter, fn *ssa.Function) {
 	for _, block := range fn.Blocks {
 		for _, instr := range block.Instrs {
 			call, ok := instr.(*ssa.Call)
@@ -194,14 +197,14 @@ func checkPureFunctionSideEffects(pass *analysis.Pass, fn *ssa.Function) {
 
 			// Check for I/O operations
 			if isIOOperation(callee) {
-				pass.Reportf(call.Pos(),
+				reporter.Reportf(call.Pos(),
 					"function %q should be pure but contains I/O operation %s",
 					fn.Name(), callee.Name())
 			}
 
 			// Check for time-dependent operations
 			if isTimeDependentCall(callee) {
-				pass.Reportf(call.Pos(),
+				reporter.Reportf(call.Pos(),
 					"function %q should be pure but depends on time; accept time as parameter instead",
 					fn.Name())
 			}
@@ -230,7 +233,7 @@ func isHandlerFunc(fn *ssa.Function) bool {
 }
 
 // checkHandlerGlobalMutations checks for global state mutations in handlers
-func checkHandlerGlobalMutations(pass *analysis.Pass, fn *ssa.Function) {
+func checkHandlerGlobalMutations(reporter *nolint.Reporter, fn *ssa.Function) {
 	for _, block := range fn.Blocks {
 		for _, instr := range block.Instrs {
 			// Check for stores to global variables
@@ -241,7 +244,7 @@ func checkHandlerGlobalMutations(pass *analysis.Pass, fn *ssa.Function) {
 
 			// Check if the address is a global
 			if global, ok := store.Addr.(*ssa.Global); ok {
-				pass.Reportf(store.Pos(),
+				reporter.Reportf(store.Pos(),
 					"handler function should not mutate global state %q; use dependency injection",
 					global.Name())
 			}
@@ -361,7 +364,7 @@ func TrackDataFlow(fn *ssa.Function, value ssa.Value) []ssa.Instruction {
 }
 
 // CheckSensitiveDataLeak uses SSA to track if sensitive data might leak
-func CheckSensitiveDataLeak(pass *analysis.Pass, fn *ssa.Function, sensitiveParamNames []string) {
+func CheckSensitiveDataLeak(reporter *nolint.Reporter, fn *ssa.Function, sensitiveParamNames []string) {
 	params := fn.Params
 	for _, param := range params {
 		for _, sensitiveName := range sensitiveParamNames {
@@ -372,7 +375,7 @@ func CheckSensitiveDataLeak(pass *analysis.Pass, fn *ssa.Function, sensitivePara
 					if call, ok := instr.(*ssa.Call); ok {
 						callee := call.Call.StaticCallee()
 						if callee != nil && isLoggingCall(callee) {
-							pass.Reportf(call.Pos(),
+							reporter.Reportf(call.Pos(),
 								"sensitive parameter %q may be leaked through logging",
 								param.Name())
 						}

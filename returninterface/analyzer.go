@@ -12,6 +12,8 @@ import (
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/analysis/passes/inspect"
 	"golang.org/x/tools/go/ast/inspector"
+
+	"github.com/spechtlabs/golint-sl/internal/nolint"
 )
 
 const Doc = `enforce "accept interfaces, return structs" principle
@@ -86,6 +88,7 @@ var factoryPatterns = []string{
 }
 
 func run(pass *analysis.Pass) (interface{}, error) {
+	reporter := nolint.NewReporter(pass)
 	inspect := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
 
 	nodeFilter := []ast.Node{
@@ -98,13 +101,13 @@ func run(pass *analysis.Pass) (interface{}, error) {
 			return
 		}
 
-		checkFunction(pass, fn)
+		checkFunction(reporter, pass, fn)
 	})
 
 	return nil, nil
 }
 
-func checkFunction(pass *analysis.Pass, fn *ast.FuncDecl) {
+func checkFunction(reporter *nolint.Reporter, pass *analysis.Pass, fn *ast.FuncDecl) {
 	if fn.Type.Results == nil {
 		return
 	}
@@ -129,7 +132,7 @@ func checkFunction(pass *analysis.Pass, fn *ast.FuncDecl) {
 		// Check if return type is an interface
 		if isNonAcceptableInterface(pass, result.Type) {
 			typeName := types.ExprString(result.Type)
-			pass.Reportf(result.Pos(),
+			reporter.Reportf(result.Pos(),
 				"function %q returns interface %q; return concrete type instead (\"accept interfaces, return structs\")",
 				fn.Name.Name, typeName)
 		}

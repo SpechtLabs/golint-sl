@@ -18,6 +18,8 @@ import (
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/analysis/passes/inspect"
 	"golang.org/x/tools/go/ast/inspector"
+
+	"github.com/spechtlabs/golint-sl/internal/nolint"
 )
 
 const Doc = `enforce consistent component lifecycle patterns
@@ -63,6 +65,7 @@ var RunMethods = []string{"Run", "Start", "Serve", "Listen"}
 var StopMethods = []string{"Close", "Stop", "Shutdown", "GracefulStop", "GracefulShutdown"}
 
 func run(pass *analysis.Pass) (interface{}, error) {
+	reporter := nolint.NewReporter(pass)
 	inspect := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
 
 	// Track types and their methods
@@ -93,10 +96,10 @@ func run(pass *analysis.Pass) (interface{}, error) {
 				runMethodPos[recvType] = fn
 
 				// Check if Run accepts context
-				checkRunAcceptsContext(pass, fn)
+				checkRunAcceptsContext(reporter, fn)
 
 				// Check if Run respects context cancellation
-				checkRunRespectsContext(pass, fn)
+				checkRunRespectsContext(reporter, fn)
 			}
 		}
 
@@ -112,7 +115,7 @@ func run(pass *analysis.Pass) (interface{}, error) {
 	for typeName, hasRun := range typeRunMethods {
 		if hasRun && !typeStopMethods[typeName] {
 			if pos, ok := runMethodPos[typeName]; ok {
-				pass.Reportf(pos.Pos(),
+				reporter.Reportf(pos.Pos(),
 					"type %q has Run() method but no Close()/Stop()/GracefulStop() method; "+
 						"consider adding a method for graceful shutdown",
 					typeName)
@@ -137,9 +140,9 @@ func getReceiverTypeName(expr ast.Expr) string {
 }
 
 // checkRunAcceptsContext verifies that Run() accepts context.Context
-func checkRunAcceptsContext(pass *analysis.Pass, fn *ast.FuncDecl) {
+func checkRunAcceptsContext(reporter *nolint.Reporter, fn *ast.FuncDecl) {
 	if fn.Type.Params == nil || len(fn.Type.Params.List) == 0 {
-		pass.Reportf(fn.Pos(),
+		reporter.Reportf(fn.Pos(),
 			"%s() should accept context.Context as first parameter for cancellation support",
 			fn.Name.Name)
 		return
@@ -149,14 +152,14 @@ func checkRunAcceptsContext(pass *analysis.Pass, fn *ast.FuncDecl) {
 	paramType := types.ExprString(firstParam.Type)
 
 	if !strings.Contains(paramType, "Context") {
-		pass.Reportf(fn.Pos(),
+		reporter.Reportf(fn.Pos(),
 			"%s() first parameter should be context.Context, got %s",
 			fn.Name.Name, paramType)
 	}
 }
 
 // checkRunRespectsContext checks if Run() has proper context handling
-func checkRunRespectsContext(pass *analysis.Pass, fn *ast.FuncDecl) {
+func checkRunRespectsContext(reporter *nolint.Reporter, fn *ast.FuncDecl) {
 	if fn.Body == nil {
 		return
 	}
@@ -193,7 +196,7 @@ func checkRunRespectsContext(pass *analysis.Pass, fn *ast.FuncDecl) {
 
 	// If there's a for loop without context check, warn
 	if hasForLoop && !hasContextDoneCheck {
-		pass.Reportf(fn.Pos(),
+		reporter.Reportf(fn.Pos(),
 			"%s() has a loop but doesn't check ctx.Done(); "+
 				"consider adding select with <-ctx.Done() case for graceful shutdown",
 			fn.Name.Name)

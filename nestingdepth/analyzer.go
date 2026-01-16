@@ -10,6 +10,8 @@ import (
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/analysis/passes/inspect"
 	"golang.org/x/tools/go/ast/inspector"
+
+	"github.com/spechtlabs/golint-sl/internal/nolint"
 )
 
 const Doc = `enforce shallow nesting depth and early returns
@@ -67,6 +69,7 @@ const MaxNestingDepth = 3
 const MaxIfElseChain = 2
 
 func run(pass *analysis.Pass) (interface{}, error) {
+	reporter := nolint.NewReporter(pass)
 	inspect := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
 
 	nodeFilter := []ast.Node{
@@ -79,29 +82,29 @@ func run(pass *analysis.Pass) (interface{}, error) {
 			return
 		}
 
-		checkFunction(pass, fn)
+		checkFunction(reporter, fn)
 	})
 
 	return nil, nil
 }
 
-func checkFunction(pass *analysis.Pass, fn *ast.FuncDecl) {
+func checkFunction(reporter *nolint.Reporter, fn *ast.FuncDecl) {
 	// Check overall nesting depth
 	maxDepth := calculateMaxDepth(fn.Body, 0)
 	if maxDepth > MaxNestingDepth {
-		pass.Reportf(fn.Pos(),
+		reporter.Reportf(fn.Pos(),
 			"function %q has nesting depth of %d (max %d); use early returns to flatten the code",
 			fn.Name.Name, maxDepth, MaxNestingDepth)
 	}
 
 	// Check for if-else chains that should be early returns
-	checkIfElseChains(pass, fn.Body)
+	checkIfElseChains(reporter, fn.Body)
 
 	// Check for nested ifs that could be combined
-	checkNestedIfs(pass, fn.Body)
+	checkNestedIfs(reporter, fn.Body)
 
 	// Check for functions that are too long and should be split
-	checkFunctionLength(pass, fn)
+	checkFunctionLength(reporter, fn)
 }
 
 // calculateMaxDepth calculates the maximum nesting depth in a block
@@ -201,7 +204,7 @@ func calculateMaxDepthInner(node ast.Node, currentDepth int) int {
 }
 
 // checkIfElseChains detects if-else chains that should use early returns
-func checkIfElseChains(pass *analysis.Pass, body *ast.BlockStmt) {
+func checkIfElseChains(reporter *nolint.Reporter, body *ast.BlockStmt) {
 	ast.Inspect(body, func(n ast.Node) bool {
 		ifStmt, ok := n.(*ast.IfStmt)
 		if !ok {
@@ -225,7 +228,7 @@ func checkIfElseChains(pass *analysis.Pass, body *ast.BlockStmt) {
 		if chainLength > MaxIfElseChain {
 			// Check if this could be converted to early returns
 			if couldUseEarlyReturn(ifStmt) {
-				pass.Reportf(ifStmt.Pos(),
+				reporter.Reportf(ifStmt.Pos(),
 					"if-else chain with %d branches; consider using early returns to flatten",
 					chainLength)
 			}
@@ -248,7 +251,7 @@ func couldUseEarlyReturn(ifStmt *ast.IfStmt) bool {
 }
 
 // checkNestedIfs detects nested if statements that could be combined
-func checkNestedIfs(pass *analysis.Pass, body *ast.BlockStmt) {
+func checkNestedIfs(reporter *nolint.Reporter, body *ast.BlockStmt) {
 	ast.Inspect(body, func(n ast.Node) bool {
 		ifStmt, ok := n.(*ast.IfStmt)
 		if !ok {
@@ -260,7 +263,7 @@ func checkNestedIfs(pass *analysis.Pass, body *ast.BlockStmt) {
 			if innerIf, ok := ifStmt.Body.List[0].(*ast.IfStmt); ok {
 				// Nested if that could potentially be combined with &&
 				if ifStmt.Else == nil && innerIf.Else == nil {
-					pass.Reportf(innerIf.Pos(),
+					reporter.Reportf(innerIf.Pos(),
 						"nested if statements could be combined with && operator")
 				}
 			}
@@ -271,7 +274,7 @@ func checkNestedIfs(pass *analysis.Pass, body *ast.BlockStmt) {
 }
 
 // checkFunctionLength checks if a function is too long and should be split
-func checkFunctionLength(pass *analysis.Pass, fn *ast.FuncDecl) {
+func checkFunctionLength(reporter *nolint.Reporter, fn *ast.FuncDecl) {
 	// Count statements (rough proxy for complexity)
 	stmtCount := 0
 	errCheckCount := 0
@@ -292,9 +295,11 @@ func checkFunctionLength(pass *analysis.Pass, fn *ast.FuncDecl) {
 		return true
 	})
 
+	_ = stmtCount // Reserved for future use
+
 	// If function has many error checks, suggest splitting
 	if errCheckCount > 5 {
-		pass.Reportf(fn.Pos(),
+		reporter.Reportf(fn.Pos(),
 			"function %q has %d error checks; consider extracting helper functions",
 			fn.Name.Name, errCheckCount)
 	}

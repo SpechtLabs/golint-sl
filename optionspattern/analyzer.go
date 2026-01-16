@@ -10,6 +10,8 @@ import (
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/analysis/passes/inspect"
 	"golang.org/x/tools/go/ast/inspector"
+
+	"github.com/spechtlabs/golint-sl/internal/nolint"
 )
 
 const Doc = `enforce consistent functional options pattern usage
@@ -35,6 +37,7 @@ const (
 )
 
 func run(pass *analysis.Pass) (interface{}, error) {
+	reporter := nolint.NewReporter(pass)
 	inspect := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
 
 	// Track Option types for validation
@@ -60,11 +63,11 @@ func run(pass *analysis.Pass) (interface{}, error) {
 	inspect.Preorder(nodeFilter, func(n ast.Node) {
 		switch node := n.(type) {
 		case *ast.TypeSpec:
-			checkOptionTypeDefinition(pass, node)
+			checkOptionTypeDefinition(reporter, node)
 
 		case *ast.FuncDecl:
-			checkConstructorPattern(pass, node, optionTypes)
-			checkOptionFunctionNaming(pass, node, optionTypes)
+			checkConstructorPattern(reporter, node, optionTypes)
+			checkOptionFunctionNaming(reporter, node, optionTypes)
 		}
 	})
 
@@ -72,7 +75,7 @@ func run(pass *analysis.Pass) (interface{}, error) {
 }
 
 // checkOptionTypeDefinition ensures Option types follow the pattern
-func checkOptionTypeDefinition(pass *analysis.Pass, ts *ast.TypeSpec) {
+func checkOptionTypeDefinition(reporter *nolint.Reporter, ts *ast.TypeSpec) {
 	// Check if this looks like an Option type
 	if !strings.HasSuffix(ts.Name.Name, "Option") && ts.Name.Name != "Option" {
 		return
@@ -81,7 +84,7 @@ func checkOptionTypeDefinition(pass *analysis.Pass, ts *ast.TypeSpec) {
 	// Should be a function type
 	ft, ok := ts.Type.(*ast.FuncType)
 	if !ok {
-		pass.Reportf(ts.Pos(),
+		reporter.Reportf(ts.Pos(),
 			"Option type %q should be a function type: type %s func(*T)",
 			ts.Name.Name, ts.Name.Name)
 		return
@@ -89,7 +92,7 @@ func checkOptionTypeDefinition(pass *analysis.Pass, ts *ast.TypeSpec) {
 
 	// Function should take exactly one pointer parameter
 	if ft.Params == nil || len(ft.Params.List) != 1 {
-		pass.Reportf(ts.Pos(),
+		reporter.Reportf(ts.Pos(),
 			"Option function type should take exactly one parameter (pointer to config struct)")
 		return
 	}
@@ -97,19 +100,19 @@ func checkOptionTypeDefinition(pass *analysis.Pass, ts *ast.TypeSpec) {
 	// Parameter should be a pointer type
 	param := ft.Params.List[0]
 	if _, ok := param.Type.(*ast.StarExpr); !ok {
-		pass.Reportf(param.Pos(),
+		reporter.Reportf(param.Pos(),
 			"Option function parameter should be a pointer type (*T)")
 	}
 
 	// Function should return nothing
 	if ft.Results != nil && len(ft.Results.List) > 0 {
-		pass.Reportf(ts.Pos(),
+		reporter.Reportf(ts.Pos(),
 			"Option function should not return any values")
 	}
 }
 
 // checkConstructorPattern ensures New* functions use options when they have many params
-func checkConstructorPattern(pass *analysis.Pass, fn *ast.FuncDecl, optionTypes map[string]bool) {
+func checkConstructorPattern(reporter *nolint.Reporter, fn *ast.FuncDecl, optionTypes map[string]bool) {
 	if fn.Name == nil {
 		return
 	}
@@ -162,14 +165,14 @@ func checkConstructorPattern(pass *analysis.Pass, fn *ast.FuncDecl, optionTypes 
 
 	// If constructor has many params and no options, suggest the pattern
 	if regularParams > maxConstructorParams && !hasOptions {
-		pass.Reportf(fn.Pos(),
+		reporter.Reportf(fn.Pos(),
 			"constructor %q has %d parameters; consider using functional options pattern: New%s(..., opts ...Option)",
 			name, regularParams, strings.TrimPrefix(name, "New"))
 	}
 }
 
 // checkOptionFunctionNaming ensures With* functions that return Option types are proper
-func checkOptionFunctionNaming(pass *analysis.Pass, fn *ast.FuncDecl, optionTypes map[string]bool) {
+func checkOptionFunctionNaming(reporter *nolint.Reporter, fn *ast.FuncDecl, optionTypes map[string]bool) {
 	if fn.Name == nil || fn.Type.Results == nil {
 		return
 	}
@@ -187,13 +190,13 @@ func checkOptionFunctionNaming(pass *analysis.Pass, fn *ast.FuncDecl, optionType
 
 		// Option-returning functions should start with "With"
 		if !strings.HasPrefix(name, optionFuncPrefix) {
-			pass.Reportf(fn.Pos(),
+			reporter.Reportf(fn.Pos(),
 				"function %q returns Option but doesn't start with 'With'; rename to With%s",
 				name, name)
 		}
 
 		// Check that the function body follows the pattern
-		checkOptionFunctionBody(pass, fn)
+		checkOptionFunctionBody(fn)
 	}
 
 	// Functions starting with "With" that don't return Option are suspicious
@@ -208,7 +211,7 @@ func checkOptionFunctionNaming(pass *analysis.Pass, fn *ast.FuncDecl, optionType
 		}
 
 		if !returnsOption {
-			pass.Reportf(fn.Pos(),
+			reporter.Reportf(fn.Pos(),
 				"function %q starts with 'With' but doesn't return an Option type; this naming is reserved for option functions",
 				name)
 		}
@@ -216,7 +219,7 @@ func checkOptionFunctionNaming(pass *analysis.Pass, fn *ast.FuncDecl, optionType
 }
 
 // checkOptionFunctionBody ensures option functions follow the closure pattern
-func checkOptionFunctionBody(_ *analysis.Pass, fn *ast.FuncDecl) {
+func checkOptionFunctionBody(fn *ast.FuncDecl) {
 	if fn.Body == nil || len(fn.Body.List) == 0 {
 		return
 	}

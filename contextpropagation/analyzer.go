@@ -10,6 +10,8 @@ import (
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/analysis/passes/inspect"
 	"golang.org/x/tools/go/ast/inspector"
+
+	"github.com/spechtlabs/golint-sl/internal/nolint"
 )
 
 const Doc = `ensure context.Context is properly propagated through call chains
@@ -70,6 +72,7 @@ var exemptFunctions = map[string]bool{
 }
 
 func run(pass *analysis.Pass) (interface{}, error) {
+	reporter := nolint.NewReporter(pass)
 	inspect := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
 
 	nodeFilter := []ast.Node{
@@ -98,17 +101,17 @@ func run(pass *analysis.Pass) (interface{}, error) {
 
 		if hasContext {
 			// Check if context is used
-			checkContextUsed(pass, fn, ctxParam)
+			checkContextUsed(reporter, fn, ctxParam)
 
 			// Check for context.Background/TODO when real context available
-			checkUnnecessaryBackgroundContext(pass, fn)
+			checkUnnecessaryBackgroundContext(reporter, fn)
 
 			// Check calls that should use context
-			checkCallsWithoutContext(pass, fn, ctxParam)
+			checkCallsWithoutContext(reporter, fn, ctxParam)
 		}
 
 		// Even without context param, check for problematic patterns
-		checkContextAwareCalls(pass, fn, hasContext)
+		checkContextAwareCalls(reporter, fn, hasContext)
 	})
 
 	return nil, nil
@@ -134,7 +137,7 @@ func getContextParam(fn *ast.FuncDecl) string {
 }
 
 // checkContextUsed verifies the context parameter is actually used AND passed to sub-calls
-func checkContextUsed(pass *analysis.Pass, fn *ast.FuncDecl, ctxParam string) {
+func checkContextUsed(reporter *nolint.Reporter, fn *ast.FuncDecl, ctxParam string) {
 	if fn.Body == nil {
 		return
 	}
@@ -166,10 +169,10 @@ func checkContextUsed(pass *analysis.Pass, fn *ast.FuncDecl, ctxParam string) {
 
 	if !usedInCall && !usedOtherwise {
 		if ctxParam == "_" {
-			pass.Reportf(fn.Pos(),
+			reporter.Reportf(fn.Pos(),
 				"context parameter is explicitly ignored with '_'; this breaks tracing and cancellation propagation")
 		} else {
-			pass.Reportf(fn.Pos(),
+			reporter.Reportf(fn.Pos(),
 				"context parameter %q is received but never used; pass it to sub-calls or remove it",
 				ctxParam)
 		}
@@ -177,10 +180,10 @@ func checkContextUsed(pass *analysis.Pass, fn *ast.FuncDecl, ctxParam string) {
 		// Context is used but not passed to any sub-calls
 		// This might indicate missing context propagation
 		if ctxParam == "_" {
-			pass.Reportf(fn.Pos(),
+			reporter.Reportf(fn.Pos(),
 				"context parameter is explicitly ignored with '_'; HTTP/API calls in this function won't support tracing or cancellation")
 		} else {
-			pass.Reportf(fn.Pos(),
+			reporter.Reportf(fn.Pos(),
 				"context parameter %q is not passed to any sub-function calls; ensure context is propagated for tracing/cancellation",
 				ctxParam)
 		}
@@ -230,7 +233,7 @@ func isSimpleFunction(fn *ast.FuncDecl) bool {
 }
 
 // checkUnnecessaryBackgroundContext detects context.Background/TODO when context available
-func checkUnnecessaryBackgroundContext(pass *analysis.Pass, fn *ast.FuncDecl) {
+func checkUnnecessaryBackgroundContext(reporter *nolint.Reporter, fn *ast.FuncDecl) {
 	ast.Inspect(fn.Body, func(n ast.Node) bool {
 		call, ok := n.(*ast.CallExpr)
 		if !ok {
@@ -250,10 +253,10 @@ func checkUnnecessaryBackgroundContext(pass *analysis.Pass, fn *ast.FuncDecl) {
 		if ident.Name == "context" {
 			switch sel.Sel.Name {
 			case "Background":
-				pass.Reportf(call.Pos(),
+				reporter.Reportf(call.Pos(),
 					"context.Background() used when context parameter is available; use the passed context instead")
 			case "TODO":
-				pass.Reportf(call.Pos(),
+				reporter.Reportf(call.Pos(),
 					"context.TODO() used when context parameter is available; use the passed context instead")
 			}
 		}
@@ -263,7 +266,7 @@ func checkUnnecessaryBackgroundContext(pass *analysis.Pass, fn *ast.FuncDecl) {
 }
 
 // checkCallsWithoutContext checks for calls that should pass context but don't
-func checkCallsWithoutContext(pass *analysis.Pass, fn *ast.FuncDecl, ctxParam string) {
+func checkCallsWithoutContext(reporter *nolint.Reporter, fn *ast.FuncDecl, ctxParam string) {
 	ast.Inspect(fn.Body, func(n ast.Node) bool {
 		call, ok := n.(*ast.CallExpr)
 		if !ok {
@@ -279,7 +282,7 @@ func checkCallsWithoutContext(pass *analysis.Pass, fn *ast.FuncDecl, ctxParam st
 		// Check package-level function calls (http.Get, exec.Command, etc.)
 		for pattern, advice := range packageLevelCallsWithoutContext {
 			if callName == pattern {
-				pass.Reportf(call.Pos(),
+				reporter.Reportf(call.Pos(),
 					"%s called without context; %s", callName, advice)
 			}
 		}
@@ -295,7 +298,7 @@ func checkCallsWithoutContext(pass *analysis.Pass, fn *ast.FuncDecl, ctxParam st
 		if advice, needsContext := methodsRequiringContext[methodName]; needsContext {
 			// Check if first argument is context
 			if !firstArgIsContext(call, ctxParam) {
-				pass.Reportf(call.Pos(),
+				reporter.Reportf(call.Pos(),
 					"%s() called without context as first argument; %s", methodName, advice)
 			}
 		}
@@ -340,7 +343,7 @@ func firstArgIsContext(call *ast.CallExpr, ctxParam string) bool {
 }
 
 // checkContextAwareCalls checks for calls that have context-aware variants
-func checkContextAwareCalls(pass *analysis.Pass, fn *ast.FuncDecl, hasContext bool) {
+func checkContextAwareCalls(reporter *nolint.Reporter, fn *ast.FuncDecl, hasContext bool) {
 	ctxParam := getContextParam(fn)
 
 	ast.Inspect(fn.Body, func(n ast.Node) bool {
@@ -357,7 +360,7 @@ func checkContextAwareCalls(pass *analysis.Pass, fn *ast.FuncDecl, hasContext bo
 		// ALWAYS flag http.NewRequest - there's no good reason to use it
 		// Use http.NewRequestWithContext even with context.Background() to be explicit
 		if callName == "http.NewRequest" {
-			pass.Reportf(call.Pos(),
+			reporter.Reportf(call.Pos(),
 				"http.NewRequest is deprecated in favor of http.NewRequestWithContext; "+
 					"always use http.NewRequestWithContext(ctx, method, url, body) for proper context propagation")
 		}
@@ -369,7 +372,7 @@ func checkContextAwareCalls(pass *analysis.Pass, fn *ast.FuncDecl, hasContext bo
 
 		// Check for time.Sleep when context is available
 		if callName == "time.Sleep" {
-			pass.Reportf(call.Pos(),
+			reporter.Reportf(call.Pos(),
 				"time.Sleep called when context is available; use select with <-ctx.Done() and time.After() instead")
 		}
 
@@ -384,7 +387,7 @@ func checkContextAwareCalls(pass *analysis.Pass, fn *ast.FuncDecl, hasContext bo
 		// Check if this is a method that has a Context variant and context isn't being passed
 		if advice, needsContext := methodsRequiringContext[methodName]; needsContext {
 			if !firstArgIsContext(call, ctxParam) {
-				pass.Reportf(call.Pos(),
+				reporter.Reportf(call.Pos(),
 					"%s() called without context; %s", methodName, advice)
 			}
 		}

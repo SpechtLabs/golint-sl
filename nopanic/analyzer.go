@@ -11,6 +11,8 @@ import (
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/analysis/passes/inspect"
 	"golang.org/x/tools/go/ast/inspector"
+
+	"github.com/spechtlabs/golint-sl/internal/nolint"
 )
 
 const Doc = `ensure library code returns errors instead of panicking
@@ -60,6 +62,7 @@ func run(pass *analysis.Pass) (interface{}, error) {
 		return nil, nil
 	}
 
+	reporter := nolint.NewReporter(pass)
 	inspect := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
 
 	var currentFunc string
@@ -92,14 +95,14 @@ func run(pass *analysis.Pass) (interface{}, error) {
 				return
 			}
 
-			checkPanicCall(pass, node, currentFunc)
+			checkPanicCall(reporter, node, currentFunc)
 		}
 	})
 
 	return nil, nil
 }
 
-func checkPanicCall(pass *analysis.Pass, call *ast.CallExpr, _ string) {
+func checkPanicCall(reporter *nolint.Reporter, call *ast.CallExpr, _ string) {
 	var funcName string
 
 	switch fn := call.Fun.(type) {
@@ -117,7 +120,7 @@ func checkPanicCall(pass *analysis.Pass, call *ast.CallExpr, _ string) {
 
 	// Check for direct panic calls
 	if funcName == "panic" {
-		pass.Reportf(call.Pos(),
+		reporter.Reportf(call.Pos(),
 			"panic() in library code; return an error instead to let callers handle failures gracefully")
 		return
 	}
@@ -132,7 +135,7 @@ func checkPanicCall(pass *analysis.Pass, call *ast.CallExpr, _ string) {
 
 	for _, pattern := range fatalPatterns {
 		if funcName == pattern {
-			pass.Reportf(call.Pos(),
+			reporter.Reportf(call.Pos(),
 				"%s() in library code terminates the program; return an error instead", funcName)
 			return
 		}
@@ -140,7 +143,7 @@ func checkPanicCall(pass *analysis.Pass, call *ast.CallExpr, _ string) {
 
 	// Check for zap fatal
 	if strings.Contains(funcName, "Fatal") && (strings.Contains(funcName, "zap") || strings.Contains(funcName, "logger")) {
-		pass.Reportf(call.Pos(),
+		reporter.Reportf(call.Pos(),
 			"Fatal log in library code terminates the program; return an error instead")
 		return
 	}

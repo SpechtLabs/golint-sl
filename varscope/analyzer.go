@@ -11,6 +11,8 @@ import (
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/analysis/passes/inspect"
 	"golang.org/x/tools/go/ast/inspector"
+
+	"github.com/spechtlabs/golint-sl/internal/nolint"
 )
 
 const Doc = `detect variables declared too far from their first use
@@ -50,6 +52,7 @@ var Analyzer = &analysis.Analyzer{
 const MaxLinesBetweenDeclAndUse = 10
 
 func run(pass *analysis.Pass) (interface{}, error) {
+	reporter := nolint.NewReporter(pass)
 	inspect := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
 
 	nodeFilter := []ast.Node{
@@ -62,7 +65,7 @@ func run(pass *analysis.Pass) (interface{}, error) {
 			return
 		}
 
-		checkFunction(pass, fn)
+		checkFunction(reporter, pass, fn)
 	})
 
 	return nil, nil
@@ -76,7 +79,7 @@ type varDecl struct {
 	assigns  int   // number of assignments (including initial)
 }
 
-func checkFunction(pass *analysis.Pass, fn *ast.FuncDecl) {
+func checkFunction(reporter *nolint.Reporter, pass *analysis.Pass, fn *ast.FuncDecl) {
 	vars := make(map[string]*varDecl)
 
 	// First pass: collect declarations
@@ -160,14 +163,14 @@ func checkFunction(pass *analysis.Pass, fn *ast.FuncDecl) {
 
 		distance := firstUse - v.declLine
 		if distance > MaxLinesBetweenDeclAndUse {
-			pass.Reportf(v.declPos,
+			reporter.Reportf(v.declPos,
 				"variable %q declared %d lines before first use; declare variables closer to their usage",
 				v.name, distance)
 		}
 
 		// Check for excessive mutations
 		if v.assigns > 3 {
-			pass.Reportf(v.declPos,
+			reporter.Reportf(v.declPos,
 				"variable %q is assigned %d times; consider using immutable values or breaking into smaller functions",
 				v.name, v.assigns)
 		}
@@ -226,7 +229,7 @@ func checkBranchOnlyVars(pass *analysis.Pass, fn *ast.FuncDecl) {
 				}
 
 				if usedInIf && !usedElsewhere && ifStmt.Else == nil {
-					pass.Reportf(ident.Pos(),
+					reporter.Reportf(ident.Pos(),
 						"variable %q is only used inside the following if block; consider declaring it inside the if",
 						ident.Name)
 				}

@@ -11,6 +11,8 @@ import (
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/analysis/passes/buildssa"
 	"golang.org/x/tools/go/ssa"
+
+	"github.com/spechtlabs/golint-sl/internal/nolint"
 )
 
 const Doc = `track data flow using SSA to detect security issues
@@ -49,24 +51,25 @@ var DangerousSinks = []string{
 }
 
 func run(pass *analysis.Pass) (interface{}, error) {
+	reporter := nolint.NewReporter(pass)
 	ssaInfo := pass.ResultOf[buildssa.Analyzer].(*buildssa.SSA)
 
 	for _, fn := range ssaInfo.SrcFuncs {
 		// Check for sensitive data flowing to logs
-		checkSensitiveDataLeaks(pass, fn)
+		checkSensitiveDataLeaks(reporter, fn)
 
 		// Check for context propagation
-		checkContextPropagation(pass, fn)
+		checkContextPropagation(reporter, fn)
 
 		// Check for error handling
-		checkErrorFlow(pass, fn)
+		checkErrorFlow(fn)
 	}
 
 	return nil, nil
 }
 
 // checkSensitiveDataLeaks traces sensitive parameters to see if they reach logging
-func checkSensitiveDataLeaks(pass *analysis.Pass, fn *ssa.Function) {
+func checkSensitiveDataLeaks(reporter *nolint.Reporter, fn *ssa.Function) {
 	for _, param := range fn.Params {
 		paramName := strings.ToLower(param.Name())
 
@@ -90,7 +93,7 @@ func checkSensitiveDataLeaks(pass *analysis.Pass, fn *ssa.Function) {
 			if call, ok := sink.(*ssa.Call); ok {
 				callee := call.Call.StaticCallee()
 				if callee != nil && isLoggingOrPrintFunction(callee) {
-					pass.Reportf(call.Pos(),
+					reporter.Reportf(call.Pos(),
 						"sensitive parameter %q may be logged; sanitize or redact before logging",
 						param.Name())
 				}
@@ -172,7 +175,7 @@ func isLoggingOrPrintFunction(fn *ssa.Function) bool {
 }
 
 // checkContextPropagation ensures context is passed through the call chain
-func checkContextPropagation(pass *analysis.Pass, fn *ssa.Function) {
+func checkContextPropagation(reporter *nolint.Reporter, fn *ssa.Function) {
 	// Check if function accepts context
 	hasContextParam := false
 	for _, param := range fn.Params {
@@ -211,7 +214,7 @@ func checkContextPropagation(pass *analysis.Pass, fn *ssa.Function) {
 				}
 
 				if !contextPassed {
-					pass.Reportf(call.Pos(),
+					reporter.Reportf(call.Pos(),
 						"function %s expects context but none was passed; propagate context through the call chain",
 						callee.Name())
 				}
@@ -242,7 +245,7 @@ func calleeExpectsContext(fn *ssa.Function) bool {
 
 // checkErrorFlow ensures errors are handled properly, not discarded
 // This is a lighter check - the standard errcheck linter handles most cases
-func checkErrorFlow(pass *analysis.Pass, fn *ssa.Function) {
+func checkErrorFlow(fn *ssa.Function) {
 	// Skip this check - errcheck from golangci-lint handles error checking better
 	// and has proper understanding of deferred calls, type assertions, etc.
 	// This function is kept for documentation/future enhancement
