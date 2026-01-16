@@ -24,18 +24,47 @@ Disable for a single run:
 golint-sl -todotracker=false -exporteddoc=false ./...
 ```
 
-## Per-File with Directives
+## Per-Line with Directives
 
-Use Go's standard `//nolint` comment directives to suppress warnings in specific files:
+Use `//nolint` comment directives to suppress warnings on specific lines:
+
+```go
+// Suppress all golint-sl analyzers on this line
+result := legacyFunction() //nolint:golint-sl
+
+// Suppress a specific analyzer
+err := doSomething() //nolint:errorwrap
+
+// Suppress multiple analyzers
+data := process(input) //nolint:nilcheck,errorwrap
+```
+
+The directive can also be placed on the line immediately before:
+
+```go
+//nolint:golint-sl
+result := legacyFunction()
+```
+
+### Supported Formats
+
+| Format | Description |
+|--------|-------------|
+| `//nolint:golint-sl` | Suppress all golint-sl analyzers |
+| `//nolint:analyzername` | Suppress specific analyzer (e.g., `errorwrap`) |
+| `//nolint:name1,name2` | Suppress multiple analyzers |
+| `// nolint:golint-sl` | Space after `//` is allowed |
+
+## Per-File Suppression
+
+To suppress warnings for an entire file, use a directive at the package declaration:
 
 ```go
 //nolint:golint-sl // This file uses legacy patterns intentionally
 package legacy
 ```
 
-::: warning
-This requires integration with tools that understand `//nolint` directives. golint-sl's native support for inline directives is limited.
-:::
+Note: This suppresses warnings only on the package line itself. For true file-wide suppression, consider using the config file instead.
 
 ## Excluding Files
 

@@ -182,6 +182,28 @@ golint-sl -humaneerror=false ./...
 golint-sl -help  # See all available flags
 ```
 
+## Suppressing Warnings
+
+Use `//nolint` directives to suppress specific warnings:
+
+```go
+// Suppress all golint-sl analyzers on this line
+result := legacyFunc() //nolint:golint-sl
+
+// Suppress specific analyzer
+err := doSomething() //nolint:errorwrap
+
+// Suppress multiple analyzers
+data := process(x) //nolint:nilcheck,errorwrap
+```
+
+The directive can also be on the preceding line:
+
+```go
+//nolint:contextfirst
+func Handler(w http.ResponseWriter, r *http.Request, ctx context.Context) {}
+```
+
 ## Philosophy
 
 **golint-sl** (GoLint SpechtLabs) enforces patterns learned from building production systems:
