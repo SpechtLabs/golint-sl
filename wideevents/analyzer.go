@@ -345,18 +345,30 @@ func analyzeLogCall(call *ast.CallExpr) *logCallInfo {
 			if name == "fmt" {
 				return nil
 			}
+			// Exclude testing.T methods - t.Errorf is not logging
+			if name == "t" || name == "b" {
+				return nil
+			}
 			// Exclude error variables - err.Error(), e.Error(), herr.Error(), lastCause.Error() is not logging
 			if name == "err" || name == "e" || strings.Contains(name, "err") || strings.Contains(name, "cause") {
+				return nil
+			}
+			// Exclude common test assertion variables
+			if name == "got" || name == "want" || name == "expected" || name == "actual" {
 				return nil
 			}
 			if strings.Contains(name, "log") || strings.Contains(name, "logger") || name == "l" {
 				isZapCall = true
 			}
 		case *ast.SelectorExpr:
-			// Could be pkg.Logger or obj.logger
+			// Could be pkg.Logger or obj.logger, or struct.err.Error()
 			if x.Sel != nil {
-				name := strings.ToLower(x.Sel.Name)
-				if strings.Contains(name, "log") || strings.Contains(name, "logger") {
+				fieldName := strings.ToLower(x.Sel.Name)
+				// Exclude struct fields that are errors (e.g., event.err.Error())
+				if fieldName == "err" || strings.Contains(fieldName, "error") {
+					return nil
+				}
+				if strings.Contains(fieldName, "log") || strings.Contains(fieldName, "logger") {
 					isZapCall = true
 				}
 			}
