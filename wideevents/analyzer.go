@@ -285,6 +285,32 @@ type logCallInfo struct {
 	fieldNames          []string
 }
 
+// zapFieldMethods are methods on the zap package that return zap.Field, not log calls
+var zapFieldMethods = map[string]bool{
+	"String":     true,
+	"Int":        true,
+	"Int64":      true,
+	"Int32":      true,
+	"Float64":    true,
+	"Float32":    true,
+	"Bool":       true,
+	"Duration":   true,
+	"Time":       true,
+	"Error":      true,
+	"NamedError": true,
+	"Any":        true,
+	"Object":     true,
+	"Array":      true,
+	"Binary":     true,
+	"ByteString": true,
+	"Reflect":    true,
+	"Stack":      true,
+	"Stringer":   true,
+	"Uint":       true,
+	"Uint64":     true,
+	"Uint32":     true,
+}
+
 func analyzeLogCall(call *ast.CallExpr) *logCallInfo {
 	sel, ok := call.Fun.(*ast.SelectorExpr)
 	if !ok {
@@ -292,6 +318,17 @@ func analyzeLogCall(call *ast.CallExpr) *logCallInfo {
 	}
 
 	method := sel.Sel.Name
+
+	// Skip fmt.Errorf/Sprintf - it's error/string construction, not logging
+	if ident, ok := sel.X.(*ast.Ident); ok {
+		if ident.Name == "fmt" && (method == "Errorf" || method == "Sprintf") {
+			return nil
+		}
+		// Skip zap.String(), zap.Error(), etc. - these are field constructors, not log calls
+		if ident.Name == "zap" && zapFieldMethods[method] {
+			return nil
+		}
+	}
 
 	// Check if this is a zap logger call
 	isZapCall := false
@@ -304,6 +341,14 @@ func analyzeLogCall(call *ast.CallExpr) *logCallInfo {
 		switch x := sel.X.(type) {
 		case *ast.Ident:
 			name := strings.ToLower(x.Name)
+			// Exclude fmt package - fmt.Errorf is not logging
+			if name == "fmt" {
+				return nil
+			}
+			// Exclude error variables - err.Error(), e.Error(), herr.Error(), lastCause.Error() is not logging
+			if name == "err" || name == "e" || strings.Contains(name, "err") || strings.Contains(name, "cause") {
+				return nil
+			}
 			if strings.Contains(name, "log") || strings.Contains(name, "logger") || name == "l" {
 				isZapCall = true
 			}
@@ -363,11 +408,16 @@ func hasStructuredFields(call *ast.CallExpr) (bool, []string) {
 			continue // Skip message
 		}
 
-		// Check for zap.String(), zap.Int(), etc.
+		// Check for zap.String(), zap.Int(), zap.Error(), etc.
 		if argCall, ok := arg.(*ast.CallExpr); ok {
 			if sel, ok := argCall.Fun.(*ast.SelectorExpr); ok {
 				if ident, ok := sel.X.(*ast.Ident); ok {
 					if ident.Name == "zap" {
+						// zap.Error() is a special case - the field name is "error"
+						if sel.Sel.Name == "Error" || sel.Sel.Name == "NamedError" {
+							fieldNames = append(fieldNames, "error")
+							continue
+						}
 						// Extract field name if possible
 						if len(argCall.Args) > 0 {
 							if lit, ok := argCall.Args[0].(*ast.BasicLit); ok {
