@@ -4,8 +4,13 @@ config:
 
   # MD013: Disable line length rule
   MD013: false
+  # MD024: Allow duplicate headings in different sections
   MD024: false
   MD038: false
+  # MD040: Require language on fenced code blocks
+  MD040: true
+  # MD060: Disable table column style checks
+  MD060: false
 
 # Include all Markdown files in the project
 globs:
@@ -14,5 +19,6 @@ globs:
 # Ignore node_modules directory and other common patterns
 ignores:
   - ".git/**"
+  - "**/node_modules/**"
   - "vendor/**"
   - CHANGELOG.md

@@ -1,0 +1,51 @@
+{
+  "name": "golint-sl-docs",
+  "version": "1.0.0",
+  "description": "Documentation for golint-sl - SpechtLabs Go Linter",
+  "type": "module",
+  "author": "Cedric Specht <cedric@specht-labs.de>",
+  "license": "Apache-2.0",
+  "engines": {
+    "node": "^18.20.0 || >=20.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/SpechtLabs/golint-sl.git"
+  },
+  "keywords": [
+    "golang",
+    "linter",
+    "static-analysis",
+    "code-quality",
+    "documentation",
+    "vuepress"
+  ],
+  "bugs": {
+    "url": "https://github.com/SpechtLabs/golint-sl/issues"
+  },
+  "homepage": "https://github.com/SpechtLabs/golint-sl#readme",
+  "devDependencies": {
+    "@vuepress/bundler-vite": "2.0.0-rc.26",
+    "@vuepress/plugin-register-components": "2.0.0-rc.118",
+    "http-server": "^14.1.1",
+    "sass-embedded": "^1.93.3",
+    "typescript": "^5.9.3",
+    "vue": "^3.5.25",
+    "vuepress": "2.0.0-rc.26",
+    "vuepress-theme-plume": "1.0.0-rc.185"
+  },
+  "dependencies": {
+    "mermaid": "^11.12.1"
+  },
+  "optionalDependencies": {
+    "@rollup/rollup-linux-x64-gnu": "^4.53.3",
+    "sass-embedded-linux-x64": "latest"
+  },
+  "scripts": {
+    "dev": "vuepress dev",
+    "dev-clean": "vuepress dev . --clean-cache --clean-temp",
+    "build": "vuepress build . --clean-cache --clean-temp",
+    "preview": "http-server ./.vuepress/dist",
+    "vp-update": "npx vp-update"
+  }
+}
