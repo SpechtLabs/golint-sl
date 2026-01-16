@@ -65,6 +65,11 @@ func run(pass *analysis.Pass) (interface{}, error) {
 }
 
 func checkFunction(reporter *nolint.Reporter, fn *ast.FuncDecl) {
+	// Skip if the function returns humane.Error - these are already wrapped
+	if returnsHumaneError(fn) {
+		return
+	}
+
 	// Track error assignments and their positions
 	errorAssignments := make(map[string]token.Pos)
 	errorWrapped := make(map[string]bool)
@@ -90,6 +95,25 @@ func checkFunction(reporter *nolint.Reporter, fn *ast.FuncDecl) {
 		}
 		return true
 	})
+}
+
+// returnsHumaneError checks if any return type is humane.Error
+func returnsHumaneError(fn *ast.FuncDecl) bool {
+	if fn.Type.Results == nil {
+		return false
+	}
+
+	for _, result := range fn.Type.Results.List {
+		if sel, ok := result.Type.(*ast.SelectorExpr); ok {
+			if ident, ok := sel.X.(*ast.Ident); ok {
+				if ident.Name == "humane" && sel.Sel.Name == "Error" {
+					return true
+				}
+			}
+		}
+	}
+
+	return false
 }
 
 func checkErrorAssignment(assign *ast.AssignStmt, errorAssignments map[string]token.Pos) {
