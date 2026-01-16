@@ -177,7 +177,7 @@ func checkFunction(reporter *nolint.Reporter, pass *analysis.Pass, fn *ast.FuncD
 	}
 
 	// Check for variables only used in one branch
-	checkBranchOnlyVars(pass, fn)
+	checkBranchOnlyVars(pass, fn, reporter)
 }
 
 func isCommonLoopVar(name string) bool {
@@ -189,7 +189,7 @@ func isCommonLoopVar(name string) bool {
 	return common[name]
 }
 
-func checkBranchOnlyVars(pass *analysis.Pass, fn *ast.FuncDecl) {
+func checkBranchOnlyVars(pass *analysis.Pass, fn *ast.FuncDecl, reporter *nolint.Reporter) {
 	// Find variables declared at function level but only used in one if branch
 	for _, stmt := range fn.Body.List {
 		// Check for pattern: var x = ...; if cond { use(x) }
