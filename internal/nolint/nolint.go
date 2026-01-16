@@ -160,7 +160,7 @@ func (r *Reporter) Reportf(pos token.Pos, format string, args ...interface{}) {
 }
 
 // Report reports a diagnostic if it's not suppressed by a nolint directive.
-func (r *Reporter) Report(d analysis.Diagnostic) {
+func (r *Reporter) Report(d *analysis.Diagnostic) {
 	position := r.Pass.Fset.Position(d.Pos)
 
 	// Check if this position is suppressed
@@ -170,5 +170,5 @@ func (r *Reporter) Report(d analysis.Diagnostic) {
 		}
 	}
 
-	r.Pass.Report(d)
+	r.Pass.Report(*d)
 }

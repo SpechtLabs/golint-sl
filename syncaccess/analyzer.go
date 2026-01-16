@@ -77,7 +77,7 @@ func run(pass *analysis.Pass) (interface{}, error) {
 			checkMutexUsage(reporter, node, structsWithMutex)
 
 		case *ast.GoStmt:
-			checkGoroutineCaptures(reporter, pass, node, currentFunc)
+			checkGoroutineCaptures(reporter, node, currentFunc)
 		}
 	})
 
@@ -116,7 +116,7 @@ func findStructsWithMutex(pass *analysis.Pass) map[string]bool {
 }
 
 // checkGoroutineCaptures checks for variables captured by goroutines
-func checkGoroutineCaptures(reporter *nolint.Reporter, pass *analysis.Pass, goStmt *ast.GoStmt, currentFunc *ast.FuncDecl) {
+func checkGoroutineCaptures(reporter *nolint.Reporter, goStmt *ast.GoStmt, currentFunc *ast.FuncDecl) {
 	funcLit, ok := goStmt.Call.Fun.(*ast.FuncLit)
 	if !ok {
 		return
