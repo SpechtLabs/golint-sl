@@ -1,0 +1,15 @@
+[tools]
+# Go version from your go.mod file
+go = "1.24.0"
+
+# Pre-commit for Git hooks
+pre-commit = "4.0.1"
+
+# Additional tools for development
+golangci-lint = "latest"
+goreleaser = "2.5.1"
+markdownlint-cli2 = "0.17.2"
+
+[env]
+# Set environment variables for Go development
+GO111MODULE = "on"

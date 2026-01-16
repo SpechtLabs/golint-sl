@@ -1,0 +1,3 @@
+FROM gcr.io/distroless/static-debian12:nonroot
+COPY tkalint /usr/local/bin/tkalint
+ENTRYPOINT ["/usr/local/bin/tkalint"]

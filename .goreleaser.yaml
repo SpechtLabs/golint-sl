@@ -1,0 +1,158 @@
+# GoReleaser configuration for golint-sl
+# Run: goreleaser release --clean
+
+version: 2
+
+project_name: golint-sl
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: golint-sl
+    main: ./cmd/golint-sl
+    binary: golint-sl
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X github.com/spechtlabs/golint-sl/internal/version.Version={{.Version}}
+      - -X github.com/spechtlabs/golint-sl/internal/version.Commit={{.Commit}}
+      - -X github.com/spechtlabs/golint-sl/internal/version.Date={{.Date}}
+
+archives:
+  - id: golint-sl
+    formats:
+      - tar.gz
+      - zip
+    name_template: >-
+      {{ .ProjectName }}_
+      {{- .Version }}_
+      {{- .Os }}_
+      {{- .Arch }}
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+
+checksum:
+  name_template: 'checksums.txt'
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+      - '^chore:'
+
+# Docker images (multi-platform)
+dockers:
+  - id: docker-amd64
+    use: buildx
+    dockerfile: Dockerfile.goreleaser
+    goos: linux
+    goarch: amd64
+    ids:
+      - golint-sl
+    image_templates:
+      - ghcr.io/spechtlabs/golint-sl:latest-amd64
+      - ghcr.io/spechtlabs/golint-sl:{{ .Tag }}-amd64
+      - ghcr.io/spechtlabs/golint-sl:v{{ .Major }}-amd64
+    build_flag_templates:
+      - "--label=org.opencontainers.image.created={{.Date}}"
+      - "--label=org.opencontainers.image.title={{.ProjectName}}"
+      - "--label=org.opencontainers.image.revision={{.FullCommit}}"
+      - "--label=org.opencontainers.image.version={{.Version}}"
+      - "--label=org.opencontainers.image.description=SpechtLabs best practices for writing good Go code"
+      - "--platform=linux/amd64"
+      - "--pull"
+
+  - id: docker-arm64
+    use: buildx
+    dockerfile: Dockerfile.goreleaser
+    goos: linux
+    goarch: arm64
+    ids:
+      - golint-sl
+    image_templates:
+      - ghcr.io/spechtlabs/golint-sl:latest-arm64
+      - ghcr.io/spechtlabs/golint-sl:{{ .Tag }}-arm64
+      - ghcr.io/spechtlabs/golint-sl:v{{ .Major }}-arm64
+    build_flag_templates:
+      - "--label=org.opencontainers.image.created={{.Date}}"
+      - "--label=org.opencontainers.image.title={{.ProjectName}}"
+      - "--label=org.opencontainers.image.revision={{.FullCommit}}"
+      - "--label=org.opencontainers.image.version={{.Version}}"
+      - "--label=org.opencontainers.image.description=SpechtLabs best practices for writing good Go code"
+      - "--platform=linux/arm64"
+      - "--pull"
+
+docker_manifests:
+  - name_template: ghcr.io/spechtlabs/golint-sl:latest
+    image_templates:
+      - ghcr.io/spechtlabs/golint-sl:latest-amd64
+      - ghcr.io/spechtlabs/golint-sl:latest-arm64
+    skip_push: auto
+
+  - name_template: ghcr.io/spechtlabs/golint-sl:{{ .Tag }}
+    image_templates:
+      - ghcr.io/spechtlabs/golint-sl:{{ .Tag }}-amd64
+      - ghcr.io/spechtlabs/golint-sl:{{ .Tag }}-arm64
+    skip_push: auto
+
+  - name_template: ghcr.io/spechtlabs/golint-sl:v{{ .Major }}
+    image_templates:
+      - ghcr.io/spechtlabs/golint-sl:v{{ .Major }}-amd64
+      - ghcr.io/spechtlabs/golint-sl:v{{ .Major }}-arm64
+    skip_push: auto
+
+# Sign docker images with cosign (keyless)
+docker_signs:
+  - id: docker-sign
+    artifacts: manifests
+    args:
+      - "sign"
+      - --oidc-issuer=https://token.actions.githubusercontent.com
+      - "${artifact}"
+      - --yes
+
+# Sign binaries with cosign
+signs:
+  - cmd: cosign
+    signature: "${artifact}.sig"
+    certificate: "${artifact}.pem"
+    args:
+      - sign-blob
+      - --yes
+      - --oidc-issuer=https://token.actions.githubusercontent.com
+      - "--output-certificate=${certificate}"
+      - "--output-signature=${signature}"
+      - "${artifact}"
+    artifacts: binary
+
+# Homebrew formula
+brews:
+  - name: golint-sl
+    repository:
+      owner: spechtlabs
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    homepage: https://github.com/SpechtLabs/golint-sl
+    description: "GoLint SpechtLabs - 32 analyzers for Go best practices"
+    license: "Apache-2.0"
+    install: |
+      bin.install "golint-sl"
+    test: |
+      system "#{bin}/golint-sl", "-help"

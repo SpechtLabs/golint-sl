@@ -1,0 +1,91 @@
+# Analyzer-related files
+analyzers:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'analyzers/**'
+          - 'clockinterface/**'
+          - 'closurecomplexity/**'
+          - 'contextfirst/**'
+          - 'contextlogger/**'
+          - 'contextpropagation/**'
+          - 'dataflow/**'
+          - 'emptyinterface/**'
+          - 'errorwrap/**'
+          - 'exporteddoc/**'
+          - 'functionsize/**'
+          - 'goroutineleak/**'
+          - 'hardcodedcreds/**'
+          - 'httpclient/**'
+          - 'humaneerror/**'
+          - 'interfaceconsistency/**'
+          - 'lifecycle/**'
+          - 'mockverify/**'
+          - 'nestingdepth/**'
+          - 'nilcheck/**'
+          - 'nopanic/**'
+          - 'optionspattern/**'
+          - 'pkgnaming/**'
+          - 'reconciler/**'
+          - 'resourceclose/**'
+          - 'returninterface/**'
+          - 'sentinelerrors/**'
+          - 'sideeffects/**'
+          - 'statusupdate/**'
+          - 'syncaccess/**'
+          - 'todotracker/**'
+          - 'varscope/**'
+          - 'wideevents/**'
+
+# CLI-related files
+cli:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'cmd/**'
+
+# Plugin-related files
+plugin:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'plugin/**'
+
+# Internal packages
+internal:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'internal/**'
+
+# Tests
+tests:
+  - changed-files:
+      - any-glob-to-any-file:
+          - '**/*_test.go'
+          - '**/testdata/**'
+
+# Documentation (Markdown files)
+documentation:
+  - changed-files:
+      - any-glob-to-any-file:
+          - '**/*.md'
+
+# Build system files
+build:
+  - changed-files:
+      - any-glob-to-any-file:
+          - '.github/**'
+          - 'Makefile'
+          - 'Dockerfile.goreleaser'
+          - '.goreleaser.yaml'
+          - 'go.mod'
+          - 'go.sum'
+          - 'renovate.json'
+
+# Add 'enhancement' label to any PR where the head branch name starts with `feature`
+enhancement:
+  - head-branch:
+      - '^feature'
+
+# Add 'bug' label to any PR where the head branch name starts with `bug` or `fix`
+bug:
+  - head-branch:
+      - '^bug'
+      - '^fix'
