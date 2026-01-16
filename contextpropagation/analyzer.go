@@ -85,6 +85,21 @@ func run(pass *analysis.Pass) (interface{}, error) {
 			return
 		}
 
+		// Get file path for context-aware checks
+		pos := pass.Fset.Position(fn.Pos())
+		filePath := pos.Filename
+
+		// Skip test files entirely
+		if strings.HasSuffix(filePath, "_test.go") {
+			return
+		}
+
+		// Skip mock files - mocks often intentionally ignore context
+		if strings.Contains(filePath, "/mock/") || strings.Contains(filePath, "/mocks/") ||
+			strings.HasSuffix(filePath, "_mock.go") || strings.HasSuffix(filePath, "_mocks.go") {
+			return
+		}
+
 		// Skip exempt functions
 		if fn.Name != nil && exemptFunctions[fn.Name.Name] {
 			return

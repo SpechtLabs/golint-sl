@@ -157,6 +157,15 @@ func run(pass *analysis.Pass) (interface{}, error) {
 			return
 		}
 
+		// Get file path for context-aware checks
+		pos := pass.Fset.Position(fn.Pos())
+		filePath := pos.Filename
+
+		// Skip test files entirely
+		if strings.HasSuffix(filePath, "_test.go") {
+			return
+		}
+
 		// Skip test functions
 		if fn.Name != nil && strings.HasPrefix(fn.Name.Name, "Test") {
 			return
@@ -167,13 +176,16 @@ func run(pass *analysis.Pass) (interface{}, error) {
 			return
 		}
 
-		checkFunction(reporter, fn)
+		// Determine if this is a CLI package (cmd/ directory or cli/ directory)
+		isCLIPackage := strings.Contains(filePath, "/cmd/") || strings.Contains(filePath, "/cli/")
+
+		checkFunction(reporter, fn, isCLIPackage)
 	})
 
 	return nil, nil
 }
 
-func checkFunction(reporter *nolint.Reporter, fn *ast.FuncDecl) {
+func checkFunction(reporter *nolint.Reporter, fn *ast.FuncDecl, isCLIPackage bool) {
 	var logCalls []*logCallInfo
 	var logsInLoops []*ast.CallExpr
 
@@ -199,8 +211,8 @@ func checkFunction(reporter *nolint.Reporter, fn *ast.FuncDecl) {
 			return false // Don't recurse again
 
 		case *ast.CallExpr:
-			// Check banned patterns first
-			checkBannedLogPatterns(reporter, node)
+			// Check banned patterns first (but allow fmt.Print* in CLI packages)
+			checkBannedLogPatterns(reporter, node, isCLIPackage)
 
 			// Check for span usage
 			if isSpanFromContextCall(node) {
@@ -393,6 +405,12 @@ func analyzeLogCall(call *ast.CallExpr) *logCallInfo {
 		return nil
 	}
 
+	// Logger calls must have at least one argument (the message)
+	// err.Error() with no arguments is NOT a log call - it's the error interface method
+	if len(call.Args) == 0 {
+		return nil
+	}
+
 	info := &logCallInfo{
 		call:             call,
 		method:           method,
@@ -445,9 +463,14 @@ func hasStructuredFields(call *ast.CallExpr) (bool, []string) {
 	return len(fieldNames) > 0, fieldNames
 }
 
-func checkBannedLogPatterns(reporter *nolint.Reporter, call *ast.CallExpr) {
+func checkBannedLogPatterns(reporter *nolint.Reporter, call *ast.CallExpr, isCLIPackage bool) {
 	callName := getCallName(call)
 	if callName == "" {
+		return
+	}
+
+	// Allow fmt.Print* in CLI packages - these are user output, not logging
+	if isCLIPackage && (callName == "fmt.Print" || callName == "fmt.Printf" || callName == "fmt.Println") {
 		return
 	}
 
