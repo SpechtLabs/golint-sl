@@ -40,18 +40,25 @@ This analyzer implements the "logging sucks" philosophy (https://loggingsucks.co
    - Flag bare string messages without context
    - Suggest using span attributes for tracing
 
-3. DETECTS anti-patterns:
+3. ENFORCES span attributes when context is available:
+   - If a function has context.Context, use trace.SpanFromContext(ctx) to get the span
+   - Add wide-event attributes to the span via span.SetAttributes()
+   - Span attributes provide better observability than logs alone
+
+4. DETECTS anti-patterns:
    - Multiple log statements in a single function (should be one wide event)
    - Info/Warn/Error logs without request context (trace_id, request_id, user_id)
    - Logging inside loops (creates log spam)
+   - Functions with context that log but don't set span attributes
 
-4. ALLOWS:
+5. ALLOWS:
    - zap.Debug for development/troubleshooting
    - Single wide event emission at function end
    - Span attributes for OpenTelemetry integration
 
 The goal: One log line per request per service with all necessary context,
-not scattered log statements throughout your code.`
+not scattered log statements throughout your code. When you have a context,
+add attributes to the span for better distributed tracing.`
 
 var Analyzer = &analysis.Analyzer{
 	Name:     "wideevents",
@@ -122,6 +129,20 @@ var requiredContextFields = []string{
 	"service",
 }
 
+// Span-related function names for OpenTelemetry
+var spanFromContextFuncs = map[string]bool{
+	"SpanFromContext": true, // trace.SpanFromContext
+	"Start":           true, // tracer.Start (creates new span)
+	"StartSpan":       true, // common pattern
+}
+
+var spanSetAttributesMethods = map[string]bool{
+	"SetAttributes": true,
+	"SetAttribute":  true, // some APIs use singular
+	"AddEvent":      true, // span events are also valid
+	"SetStatus":     true, // setting status is also valid span usage
+}
+
 func run(pass *analysis.Pass) (interface{}, error) {
 	reporter := nolint.NewReporter(pass)
 	inspect := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
@@ -156,7 +177,12 @@ func checkFunction(reporter *nolint.Reporter, fn *ast.FuncDecl) {
 	var logCalls []*logCallInfo
 	var logsInLoops []*ast.CallExpr
 
-	// Collect all log calls in the function
+	// Check if function has a context parameter
+	hasContext := functionHasContext(fn)
+	hasSpanUsage := false
+	hasSpanAttributes := false
+
+	// Collect all log calls and span usage in the function
 	ast.Inspect(fn.Body, func(n ast.Node) bool {
 		// Track if we're inside a loop
 		switch node := n.(type) {
@@ -175,6 +201,14 @@ func checkFunction(reporter *nolint.Reporter, fn *ast.FuncDecl) {
 		case *ast.CallExpr:
 			// Check banned patterns first
 			checkBannedLogPatterns(reporter, node)
+
+			// Check for span usage
+			if isSpanFromContextCall(node) {
+				hasSpanUsage = true
+			}
+			if isSpanSetAttributesCall(node) {
+				hasSpanAttributes = true
+			}
 
 			// Analyze the log call
 			if info := analyzeLogCall(node); info != nil {
@@ -214,6 +248,30 @@ func checkFunction(reporter *nolint.Reporter, fn *ast.FuncDecl) {
 		// Check for traditional log methods that should be wide events
 		if info.isTraditionalLog && !info.isDebug {
 			checkWideEventContext(reporter, info)
+		}
+	}
+
+	// If function has context and logs but doesn't use span attributes, suggest it
+	if hasContext && len(logCalls) > 0 && !hasSpanAttributes {
+		// Only report if there are non-debug logs
+		hasNonDebugLogs := false
+		for _, info := range logCalls {
+			if !info.isDebug {
+				hasNonDebugLogs = true
+				break
+			}
+		}
+
+		if hasNonDebugLogs {
+			if !hasSpanUsage {
+				reporter.Reportf(fn.Pos(),
+					"function has context.Context but doesn't use span attributes; "+
+						"use span := trace.SpanFromContext(ctx) and span.SetAttributes() for better observability")
+			} else if !hasSpanAttributes {
+				reporter.Reportf(fn.Pos(),
+					"function gets span from context but doesn't set attributes; "+
+						"add span.SetAttributes(attribute.String(\"key\", value)) for wide event data")
+			}
 		}
 	}
 }
@@ -373,4 +431,93 @@ func getCallName(call *ast.CallExpr) string {
 		}
 	}
 	return ""
+}
+
+// functionHasContext checks if the function has a context.Context parameter
+func functionHasContext(fn *ast.FuncDecl) bool {
+	if fn.Type.Params == nil {
+		return false
+	}
+
+	for _, param := range fn.Type.Params.List {
+		if isContextType(param.Type) {
+			return true
+		}
+	}
+	return false
+}
+
+// isContextType checks if an expression is context.Context
+func isContextType(expr ast.Expr) bool {
+	switch t := expr.(type) {
+	case *ast.SelectorExpr:
+		if ident, ok := t.X.(*ast.Ident); ok {
+			return ident.Name == "context" && t.Sel.Name == "Context"
+		}
+	case *ast.Ident:
+		// Could be aliased import or type alias
+		return t.Name == "Context"
+	}
+	return false
+}
+
+// isSpanFromContextCall checks if a call is trace.SpanFromContext or similar
+func isSpanFromContextCall(call *ast.CallExpr) bool {
+	sel, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok {
+		return false
+	}
+
+	methodName := sel.Sel.Name
+
+	// Check for trace.SpanFromContext, otel.SpanFromContext, etc.
+	if spanFromContextFuncs[methodName] {
+		// Check the package/receiver
+		switch x := sel.X.(type) {
+		case *ast.Ident:
+			name := strings.ToLower(x.Name)
+			if name == "trace" || name == "otel" || strings.Contains(name, "tracer") {
+				return true
+			}
+		case *ast.SelectorExpr:
+			// Could be oteltrace.SpanFromContext
+			if x.Sel != nil {
+				name := strings.ToLower(x.Sel.Name)
+				if strings.Contains(name, "trace") {
+					return true
+				}
+			}
+		}
+	}
+
+	return false
+}
+
+// isSpanSetAttributesCall checks if a call is span.SetAttributes or similar
+func isSpanSetAttributesCall(call *ast.CallExpr) bool {
+	sel, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok {
+		return false
+	}
+
+	methodName := sel.Sel.Name
+
+	// Check for SetAttributes, SetAttribute, AddEvent, etc.
+	if spanSetAttributesMethods[methodName] {
+		// Check if receiver looks like a span
+		switch x := sel.X.(type) {
+		case *ast.Ident:
+			name := strings.ToLower(x.Name)
+			if name == "span" || strings.Contains(name, "span") {
+				return true
+			}
+		case *ast.CallExpr:
+			// Could be trace.SpanFromContext(ctx).SetAttributes(...)
+			if isSpanFromContextCall(x) {
+				return true
+			}
+		}
+	}
+
+	return false
 }

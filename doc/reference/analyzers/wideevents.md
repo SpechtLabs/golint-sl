@@ -18,6 +18,7 @@ This analyzer enforces the philosophy from [loggingsucks.com](https://loggingsuc
 2. Single event per function (no scattered logs)
 3. Structured fields on log calls
 4. Request context in wide events
+5. **Span attributes when context is available** - if you have a `context.Context`, use `trace.SpanFromContext(ctx)` and add attributes to the span
 
 ## Why It Matters
 
@@ -112,6 +113,66 @@ for _, item := range items {
     processedIDs = append(processedIDs, item.ID)
 }
 logger.Info("processed items", zap.Strings("ids", processedIDs))
+```
+
+### Bad: Logging Without Span Attributes
+
+```go
+func ProcessRequest(ctx context.Context, req *Request) error {
+    // Has context but only logs - doesn't use span!
+    logger.Info("processing request",
+        zap.String("request_id", req.ID),
+    )
+    return nil
+}
+```
+
+### Good: Using Span Attributes
+
+```go
+import "go.opentelemetry.io/otel/trace"
+
+func ProcessRequest(ctx context.Context, req *Request) error {
+    span := trace.SpanFromContext(ctx)
+    span.SetAttributes(
+        attribute.String("request_id", req.ID),
+        attribute.String("user_id", req.UserID),
+    )
+
+    // ... process request ...
+
+    span.SetAttributes(attribute.String("result", "success"))
+    return nil
+}
+```
+
+### Best: Span Attributes + Single Wide Event
+
+```go
+func ProcessRequest(ctx context.Context, req *Request) error {
+    span := trace.SpanFromContext(ctx)
+    start := time.Now()
+
+    defer func() {
+        // Add final attributes to span
+        span.SetAttributes(
+            attribute.Int64("duration_ms", time.Since(start).Milliseconds()),
+        )
+        // Emit single wide event for logs/metrics
+        logger.Info("request processed",
+            zap.String("trace_id", span.SpanContext().TraceID().String()),
+            zap.String("request_id", req.ID),
+            zap.Duration("duration", time.Since(start)),
+        )
+    }()
+
+    span.SetAttributes(
+        attribute.String("request_id", req.ID),
+        attribute.String("user_id", req.UserID),
+    )
+
+    return processInternal(ctx, req)
+}
 ```
 
 ## Allowed Patterns
