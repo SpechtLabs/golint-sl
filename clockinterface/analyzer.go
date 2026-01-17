@@ -61,11 +61,26 @@ var ExemptPackages = []string{
 	"_test", // Test files are fine
 }
 
+// ExemptPackagePaths are package path patterns where time.Now is acceptable
+// These are typically CLI/UI code where time testability is less critical
+var ExemptPackagePaths = []string{
+	"/cli/",      // CLI packages
+	"/cmd/",      // Command packages
+	"/spinner",   // Spinner UI components
+	"/pretty",    // Pretty printing
+	"/format",    // Formatting
+	"/ui/",       // UI packages
+	"/terminal/", // Terminal utilities
+}
+
 // ExemptFunctions are function names where time.Now is acceptable
 var ExemptFunctions = []string{
 	"main",
 	"init",
-	"New", // Constructors often set default clocks
+	"New",    // Constructors often set default clocks
+	"Format", // Formatting functions
+	"Print",  // Print functions
+	"String", // String conversion functions
 }
 
 func run(pass *analysis.Pass) (interface{}, error) {
@@ -76,6 +91,13 @@ func run(pass *analysis.Pass) (interface{}, error) {
 	pkgPath := pass.Pkg.Path()
 	for _, exempt := range ExemptPackages {
 		if strings.HasSuffix(pkgPath, exempt) || strings.Contains(pkgPath, exempt+"/") {
+			return nil, nil
+		}
+	}
+
+	// Check if package path matches exempt patterns
+	for _, pattern := range ExemptPackagePaths {
+		if strings.Contains(pkgPath, pattern) {
 			return nil, nil
 		}
 	}

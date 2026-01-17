@@ -155,7 +155,7 @@ func checkErrorsNew(reporter *nolint.Reporter, call *ast.CallExpr, currentFunc *
 				// but often used for formatting. Only flag if it looks like a constant message
 				if isLiteralString(call.Args[0]) && len(call.Args) == 1 {
 					reporter.Reportf(call.Pos(),
-						"fmt.Errorf() without %%w verb and no formatting; use a sentinel error or wrap an existing error")
+						"fmt.Errorf() without %%w verb and no formatting; use humane.New(message, advice...) or define a sentinel error")
 				}
 			}
 		}

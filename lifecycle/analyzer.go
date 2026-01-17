@@ -61,7 +61,9 @@ var Analyzer = &analysis.Analyzer{
 }
 
 // LifecycleMethods are methods that indicate a component has lifecycle
-var RunMethods = []string{"Run", "Start", "Serve", "Listen"}
+// Note: "Listen" is excluded because it typically follows the net.Listen() pattern
+// (takes an address string and returns quickly) rather than being a blocking run method
+var RunMethods = []string{"Run", "Start", "Serve"}
 var StopMethods = []string{"Close", "Stop", "Shutdown", "GracefulStop", "GracefulShutdown"}
 
 func run(pass *analysis.Pass) (interface{}, error) {

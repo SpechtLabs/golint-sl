@@ -35,11 +35,11 @@ var Analyzer = &analysis.Analyzer{
 
 // resourcePattern defines a pattern for detecting unclosed resources
 type resourcePattern struct {
-	AssignType   string   // e.g., "*http.Response"
-	CloseField   string   // e.g., "Body" (empty means close on the var itself)
-	CloseCall    string   // e.g., "Close"
-	Message      string   // Error message
-	CreateFuncs  []string // Functions that create this resource (if empty, match by type only)
+	AssignType  string   // e.g., "*http.Response"
+	CloseField  string   // e.g., "Body" (empty means close on the var itself)
+	CloseCall   string   // e.g., "Close"
+	Message     string   // Error message
+	CreateFuncs []string // Functions that create this resource (if empty, match by type only)
 }
 
 var patterns = []resourcePattern{
@@ -114,10 +114,23 @@ func checkFunction(reporter *nolint.Reporter, pass *analysis.Pass, fn *ast.FuncD
 	// Track which resources have been closed
 	closedResources := make(map[string]bool)
 
+	// Track if-init assignments that are create-and-close patterns (to avoid double-processing)
+	skipAssignments := make(map[*ast.AssignStmt]bool)
+
 	// First pass: find all resource assignments and closes
 	ast.Inspect(fn.Body, func(n ast.Node) bool {
 		switch node := n.(type) {
 		case *ast.AssignStmt:
+			// Skip if this assignment was already handled as part of an if-init pattern
+			if skipAssignments[node] {
+				// Still check for close calls on RHS
+				for _, rhs := range node.Rhs {
+					if call, ok := rhs.(*ast.CallExpr); ok {
+						checkCloseCall(call, closedResources)
+					}
+				}
+				return true
+			}
 			checkAssignment(pass, node, resourceVars)
 			// Also check for close calls on RHS: _ = f.Close()
 			for _, rhs := range node.Rhs {
@@ -135,6 +148,21 @@ func checkFunction(reporter *nolint.Reporter, pass *analysis.Pass, fn *ast.FuncD
 				checkTestCleanup(call, closedResources)
 			}
 		case *ast.IfStmt:
+			// Check for resources created in if init: if f, err := os.Create(...); err == nil
+			// These are handled separately - mark the variable as closed if Close is called in body
+			if node.Init != nil {
+				if assign, ok := node.Init.(*ast.AssignStmt); ok {
+					// Check if resource is created and closed within the same if statement
+					if isCreateAndClosePattern(pass, assign, node.Body) {
+						// Mark this assignment to be skipped when ast.Inspect recurses into it
+						skipAssignments[assign] = true
+					} else {
+						checkAssignment(pass, assign, resourceVars)
+						// Also mark to skip double-processing
+						skipAssignments[assign] = true
+					}
+				}
+			}
 			// Check for closes inside if blocks (common pattern for create-and-close)
 			checkIfBlockCloses(node, closedResources)
 			// Check for pattern: if f, err := os.Create(...); err == nil { f.Close() }
@@ -142,6 +170,9 @@ func checkFunction(reporter *nolint.Reporter, pass *analysis.Pass, fn *ast.FuncD
 		}
 		return true
 	})
+
+	// DEBUG: uncomment to trace
+	// fmt.Printf("DEBUG: resourceVars=%v closedResources=%v\n", resourceVars, closedResources)
 
 	// Report unclosed resources
 	for varName, info := range resourceVars {
@@ -230,6 +261,50 @@ func checkIfBlockCloses(ifStmt *ast.IfStmt, closedResources map[string]bool) {
 			return true
 		})
 	}
+}
+
+// isCreateAndClosePattern checks if a resource is created in an if init and immediately closed in the body
+// Pattern: if f, err := os.Create(...); err == nil { _ = f.Close() }
+func isCreateAndClosePattern(pass *analysis.Pass, assign *ast.AssignStmt, body *ast.BlockStmt) bool {
+	// Get the variable names from the assignment
+	varNames := make(map[string]bool)
+	for _, lhs := range assign.Lhs {
+		if ident, ok := lhs.(*ast.Ident); ok && ident.Name != "_" && ident.Name != "err" {
+			varNames[ident.Name] = true
+		}
+	}
+
+	if len(varNames) == 0 {
+		return false
+	}
+
+	// Check if any of these variables are closed in the body
+	closed := false
+	ast.Inspect(body, func(n ast.Node) bool {
+		var call *ast.CallExpr
+
+		switch node := n.(type) {
+		case *ast.ExprStmt:
+			call, _ = node.X.(*ast.CallExpr)
+		case *ast.AssignStmt:
+			if len(node.Rhs) == 1 {
+				call, _ = node.Rhs[0].(*ast.CallExpr)
+			}
+		}
+
+		if call != nil {
+			if target := getCloseTarget(call); target != "" {
+				parts := strings.Split(target, ".")
+				if len(parts) > 0 && varNames[parts[0]] {
+					closed = true
+					return false
+				}
+			}
+		}
+		return true
+	})
+
+	return closed
 }
 
 // checkIfInitAndClose handles pattern: if f, err := os.Create(...); err == nil { f.Close() }
@@ -329,7 +404,7 @@ func checkAssignment(pass *analysis.Pass, assign *ast.AssignStmt, resourceVars m
 			continue
 		}
 
-		// Get the RHS expression
+		// Get the RHS expression (for stdio check and function name extraction)
 		var rhsExpr ast.Expr
 		if i < len(assign.Rhs) {
 			rhsExpr = assign.Rhs[i]
@@ -342,13 +417,18 @@ func checkAssignment(pass *analysis.Pass, assign *ast.AssignStmt, resourceVars m
 			continue
 		}
 
-		// Get the type of the RHS if possible
-		var rhsType types.Type
-		if rhsExpr != nil {
-			rhsType = pass.TypesInfo.TypeOf(rhsExpr)
+		// Get the type of the variable being assigned, not the RHS expression
+		// This properly handles multi-return functions like os.CreateTemp() -> (*os.File, error)
+		var varType types.Type
+		if obj := pass.TypesInfo.Defs[ident]; obj != nil {
+			// For := assignments, the variable is being defined
+			varType = obj.Type()
+		} else if obj := pass.TypesInfo.Uses[ident]; obj != nil {
+			// For = assignments to existing variables
+			varType = obj.Type()
 		}
 
-		if rhsType == nil {
+		if varType == nil {
 			continue
 		}
 
@@ -356,7 +436,7 @@ func checkAssignment(pass *analysis.Pass, assign *ast.AssignStmt, resourceVars m
 		callFuncName := getCallFuncName(assign.Rhs)
 
 		// Check against patterns
-		typeStr := rhsType.String()
+		typeStr := varType.String()
 		for _, pattern := range patterns {
 			if strings.Contains(typeStr, pattern.AssignType) {
 				// If pattern has CreateFuncs, only match if the call matches

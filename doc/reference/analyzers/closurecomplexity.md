@@ -14,6 +14,22 @@ Clean Code
 
 This analyzer detects anonymous functions (closures) that are too complex.
 
+**Thresholds:**
+
+- Maximum statements: 15
+- Maximum nesting depth: 2
+- Maximum captured variables: 5
+
+**Exempt Closures:**
+
+- Deferred closures (`defer func() {...}()`)
+- Goroutine closures (`go func() {...}()`)
+- Closures returned from functions (handler factory pattern)
+- Cobra command handlers (`RunE`, `Run`, `PreRunE`, etc.)
+- HTTP handler fields
+- Visitor pattern callbacks (`Inspect`, `VisitAll`, `Walk`, `WalkDir`, etc.)
+- Test files (closures in `*_test.go` files)
+
 ## Why It Matters
 
 Complex closures:

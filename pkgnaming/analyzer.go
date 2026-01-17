@@ -146,6 +146,12 @@ func checkStutter(reporter *nolint.Reporter, pkgName, exportedName string, node 
 		// Extract what comes after the package name prefix
 		suffix := exportedName[len(pkgName):]
 		if suffix != "" && unicode.IsUpper(rune(suffix[0])) {
+			// Exception: Mock* types in mock packages are a common convention
+			// The Mock prefix clearly indicates the type's purpose for testing
+			if pkgLower == "mock" && strings.HasPrefix(exportedName, "Mock") {
+				return
+			}
+
 			// This is stutter: http.HTTPClient, user.UserService
 			reporter.Reportf(node.Pos(),
 				"%s %s.%s stutters; consider renaming to %s.%s",

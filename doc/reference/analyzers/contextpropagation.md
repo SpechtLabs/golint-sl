@@ -87,6 +87,21 @@ func ProcessOrder(ctx context.Context, order *Order) error {
 }
 ```
 
+## Excluded Files
+
+The analyzer automatically skips:
+
+- **Test files** (`*_test.go`) - Tests often use `context.Background()` intentionally
+- **Mock packages** (`/mock/`, `/mocks/`, `*_mock.go`) - Mocks don't need to propagate context
+- **Mock types** (types prefixed with `Mock` or `mock`) - Same reason
+
+```go
+// In pkg/mocks/service.go - NOT checked
+func (m *MockService) Process(ctx context.Context, data string) error {
+    return m.processFunc(data)  // OK - mock doesn't need ctx
+}
+```
+
 ## Configuration
 
 ```yaml

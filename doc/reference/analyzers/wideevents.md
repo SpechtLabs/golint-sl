@@ -26,6 +26,7 @@ This analyzer enforces the philosophy from [loggingsucks.com](https://loggingsuc
 - **otelzap** - `otelzap.L().InfoContext()`, `otelzap.L().WithError().ErrorContext()`, etc.
 
 The analyzer recognizes:
+
 - Context-aware methods (`*Context` suffix) that auto-extract trace context
 - Method chaining (`.WithError()`, `.With()`) that adds structured fields
 

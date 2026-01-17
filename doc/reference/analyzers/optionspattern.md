@@ -14,6 +14,21 @@ Testability
 
 This analyzer encourages the functional options pattern for types with many configuration options.
 
+**Constructor Threshold:** Warns when constructors (`New*` functions) have more than 4 parameters without using functional options.
+
+**Valid Option Function Prefixes:** Functions returning Option types should use one of these prefixes:
+
+- `With*` (primary, e.g., `WithTimeout`, `WithLogger`)
+- `Allow*` (e.g., `AllowInsecure`, `AllowRetry`)
+- `Enable*` (e.g., `EnableDebug`, `EnableMetrics`)
+- `Disable*` (e.g., `DisableCache`, `DisableRetry`)
+- `Set*` (e.g., `SetTimeout`, `SetMaxRetries`)
+
+**Exemptions:**
+
+- Private functions (lowercase first letter) are not checked
+- `Default*` functions are exempt (they return sets of default options, not individual options)
+
 ## Why It Matters
 
 Long parameter lists are hard to read and modify:
@@ -94,6 +109,38 @@ func NewServer(opts ...ServerOption) *Server {
 }
 ```
 
+### Good: Alternative Prefixes
+
+```go
+// Allow, Enable, Disable prefixes are also valid
+func AllowInsecure() ServerOption {
+    return func(s *Server) {
+        s.insecure = true
+    }
+}
+
+func EnableDebugLogging() ServerOption {
+    return func(s *Server) {
+        s.debug = true
+    }
+}
+
+func DisableRetry() ServerOption {
+    return func(s *Server) {
+        s.maxRetries = 0
+    }
+}
+
+// Default* functions provide sets of defaults - exempt from prefix rule
+func DefaultProductionOptions() []ServerOption {
+    return []ServerOption{
+        WithTLS(true),
+        DisableDebug(),
+        WithTimeout(30 * time.Second),
+    }
+}
+```
+
 ### Usage
 
 ```go
@@ -104,6 +151,15 @@ server := NewServer(
     WithTLS(true),
     WithTimeout(60 * time.Second),
 )
+
+// Using alternative prefixes
+server := NewServer(
+    AllowInsecure(),
+    EnableDebugLogging(),
+)
+
+// Using default options
+server := NewServer(DefaultProductionOptions()...)
 ```
 
 ## Configuration

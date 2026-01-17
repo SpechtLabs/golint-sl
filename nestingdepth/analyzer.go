@@ -261,6 +261,14 @@ func checkNestedIfs(reporter *nolint.Reporter, body *ast.BlockStmt) {
 		// Check if the only statement in the if body is another if
 		if len(ifStmt.Body.List) == 1 {
 			if innerIf, ok := ifStmt.Body.List[0].(*ast.IfStmt); ok {
+				// Skip if either if has an Init clause (short variable declaration)
+				// These cannot be easily combined with && because the variable
+				// needs to be assigned before checking the condition
+				// Example: if x := getValue(); x != nil { if err := x.Do(); err != nil { ... } }
+				if innerIf.Init != nil {
+					return true
+				}
+
 				// Nested if that could potentially be combined with &&
 				if ifStmt.Else == nil && innerIf.Else == nil {
 					reporter.Reportf(innerIf.Pos(),

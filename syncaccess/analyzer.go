@@ -130,6 +130,11 @@ func checkGoroutineCaptures(reporter *nolint.Reporter, goStmt *ast.GoStmt, curre
 
 	// Check for problematic captures
 	for varName, varInfo := range capturedVars {
+		// Skip channels - they are inherently thread-safe in Go
+		if varInfo.isChannel {
+			continue
+		}
+
 		// Check if it's a loop variable (common bug)
 		if isLoopVariable(currentFunc, varName, goStmt) {
 			reporter.Reportf(varInfo.pos,
@@ -154,6 +159,7 @@ type varInfo struct {
 	isPointer   bool
 	isMap       bool
 	isSlice     bool
+	isChannel   bool // Channels are thread-safe, should not be flagged
 	isProtected bool
 }
 
@@ -191,6 +197,8 @@ func collectLocalVars(fn *ast.FuncDecl) map[string]varInfo {
 						info.isMap = true
 					case *ast.ArrayType:
 						info.isSlice = true
+					case *ast.ChanType:
+						info.isChannel = true
 					}
 				}
 				vars[name.Name] = info
@@ -215,8 +223,10 @@ func inferVarType(expr ast.Expr, info varInfo) varInfo {
 				switch e.Args[0].(type) {
 				case *ast.MapType:
 					info.isMap = true
-				case *ast.ArrayType, *ast.ChanType:
+				case *ast.ArrayType:
 					info.isSlice = true
+				case *ast.ChanType:
+					info.isChannel = true // Channels are thread-safe
 				}
 			}
 		}

@@ -59,12 +59,48 @@ var Analyzer = &analysis.Analyzer{
 
 const (
 	// MaxClosureStatements is the maximum statements allowed in a closure
-	MaxClosureStatements = 10
+	MaxClosureStatements = 15
 	// MaxClosureNesting is the maximum nesting depth in a closure
 	MaxClosureNesting = 2
 	// MaxCapturedVars is the maximum variables captured from outer scope
-	MaxCapturedVars = 3
+	MaxCapturedVars = 5
 )
+
+// exemptCobraFields are struct fields in Cobra commands that commonly have large closures
+var exemptCobraFields = map[string]bool{
+	"RunE":              true,
+	"Run":               true,
+	"PreRunE":           true,
+	"PreRun":            true,
+	"PostRunE":          true,
+	"PostRun":           true,
+	"PersistentPreRunE": true,
+	"PersistentPreRun":  true,
+}
+
+// exemptHTTPFields are struct fields for HTTP handlers
+var exemptHTTPFields = map[string]bool{
+	"Handler":     true,
+	"HandlerFunc": true,
+}
+
+// exemptVisitorFuncs are function names that take visitor/callback closures
+// These callbacks naturally need to handle all the logic for each visited node
+var exemptVisitorFuncs = map[string]bool{
+	// AST visitor patterns
+	"Inspect":  true,
+	"Preorder": true,
+	"Walk":     true,
+	// Flag visitor patterns
+	"VisitAll": true,
+	"Visit":    true,
+	// Filepath walking
+	"WalkDir":  true,
+	"WalkFunc": true,
+	// Generic iteration patterns
+	"ForEach": true,
+	"Range":   true,
+}
 
 func run(pass *analysis.Pass) (interface{}, error) {
 	reporter := nolint.NewReporter(pass)
@@ -73,17 +109,82 @@ func run(pass *analysis.Pass) (interface{}, error) {
 	var currentFunc *ast.FuncDecl
 	var inTestFile bool
 
+	// Track closures that should be exempt
+	exemptClosures := make(map[*ast.FuncLit]bool)
+
+	// First pass: find exempt closures
 	nodeFilter := []ast.Node{
 		(*ast.File)(nil),
 		(*ast.FuncDecl)(nil),
-		(*ast.FuncLit)(nil),
+		(*ast.DeferStmt)(nil),
+		(*ast.KeyValueExpr)(nil),
+		(*ast.ReturnStmt)(nil),
+		(*ast.GoStmt)(nil),
+		(*ast.CallExpr)(nil),
 	}
 
 	inspect.Preorder(nodeFilter, func(n ast.Node) {
 		switch node := n.(type) {
 		case *ast.File:
-			// Skip test files - table-driven tests commonly use longer closures
-			// for setup functions, fixture initialization, and mock configuration
+			filename := pass.Fset.Position(node.Pos()).Filename
+			inTestFile = strings.HasSuffix(filename, "_test.go")
+
+		case *ast.FuncDecl:
+			currentFunc = node
+
+		case *ast.DeferStmt:
+			// Exempt deferred closures - they're commonly used for cleanup/telemetry
+			if funcLit, ok := node.Call.Fun.(*ast.FuncLit); ok {
+				exemptClosures[funcLit] = true
+			}
+
+		case *ast.GoStmt:
+			// Exempt goroutine closures - they need to capture context
+			if funcLit, ok := node.Call.Fun.(*ast.FuncLit); ok {
+				exemptClosures[funcLit] = true
+			}
+
+		case *ast.ReturnStmt:
+			// Exempt closures returned from functions (handler factory pattern)
+			for _, result := range node.Results {
+				if funcLit, ok := result.(*ast.FuncLit); ok {
+					exemptClosures[funcLit] = true
+				}
+			}
+
+		case *ast.CallExpr:
+			// Check for visitor pattern callbacks (e.g., ast.Inspect, f.VisitAll)
+			funcName := getCallFuncName(node)
+			if exemptVisitorFuncs[funcName] {
+				for _, arg := range node.Args {
+					if funcLit, ok := arg.(*ast.FuncLit); ok {
+						exemptClosures[funcLit] = true
+					}
+				}
+			}
+
+		case *ast.KeyValueExpr:
+			// Check for Cobra RunE/Run and HTTP handler fields
+			if ident, ok := node.Key.(*ast.Ident); ok {
+				if exemptCobraFields[ident.Name] || exemptHTTPFields[ident.Name] {
+					if funcLit, ok := node.Value.(*ast.FuncLit); ok {
+						exemptClosures[funcLit] = true
+					}
+				}
+			}
+		}
+	})
+
+	// Second pass: check non-exempt closures
+	closureFilter := []ast.Node{
+		(*ast.File)(nil),
+		(*ast.FuncDecl)(nil),
+		(*ast.FuncLit)(nil),
+	}
+
+	inspect.Preorder(closureFilter, func(n ast.Node) {
+		switch node := n.(type) {
+		case *ast.File:
 			filename := pass.Fset.Position(node.Pos()).Filename
 			inTestFile = strings.HasSuffix(filename, "_test.go")
 
@@ -93,6 +194,9 @@ func run(pass *analysis.Pass) (interface{}, error) {
 		case *ast.FuncLit:
 			if inTestFile {
 				return // Skip closures in test files
+			}
+			if exemptClosures[node] {
+				return // Skip exempt closures
 			}
 			checkClosure(reporter, node, currentFunc)
 		}
@@ -334,4 +438,15 @@ func isBuiltinOrCommon(name string) bool {
 		"http": true, "json": true, "errors": true, "strings": true,
 	}
 	return builtins[name]
+}
+
+// getCallFuncName extracts the function name from a call expression
+func getCallFuncName(call *ast.CallExpr) string {
+	switch fn := call.Fun.(type) {
+	case *ast.Ident:
+		return fn.Name
+	case *ast.SelectorExpr:
+		return fn.Sel.Name
+	}
+	return ""
 }

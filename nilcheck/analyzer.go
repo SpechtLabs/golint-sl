@@ -49,6 +49,7 @@ var trustedPointerTypes = map[string]bool{
 	"*testing.T": true,
 	"*testing.B": true,
 	"*testing.M": true,
+	"*testing.F": true,
 
 	// Gin framework
 	"*gin.Context":     true,
@@ -64,6 +65,72 @@ var trustedPointerTypes = map[string]bool{
 
 	// Context (interface, but trusted)
 	"context.Context": true,
+
+	// Kubernetes controller-runtime
+	"*reconcile.Request": true,
+	"reconcile.Request":  true,
+
+	// Common loggers - never nil in practice
+	"*zap.Logger":        true,
+	"*zap.SugaredLogger": true,
+	"*log.Logger":        true,
+
+	// gRPC
+	"*grpc.Server":     true,
+	"*grpc.ClientConn": true,
+
+	// Protobuf types are validated by framework
+	"proto.Message": true,
+
+	// HTTP response - typically guaranteed non-nil when error is nil
+	"*http.Response": true,
+
+	// OS exec - typically from Command() which never returns nil
+	"*exec.Cmd": true,
+
+	// Kubernetes API types
+	"*api.Config":  true, // clientcmd kubeconfig
+	"*rest.Config": true, // client-go rest config
+
+	// Flag/pflag sets - from Flags() which never returns nil
+	"*flag.FlagSet":  true,
+	"*pflag.FlagSet": true,
+
+	// Viper - from Get() which typically doesn't return nil
+	"*viper.Viper": true,
+}
+
+// trustedTypePatterns are partial matches for type names that indicate trusted types
+var trustedTypePatterns = []string{
+	// Kubernetes CRD types often have guaranteed non-nil from reconciler
+	"v1alpha1.",
+	"v1beta1.",
+	"v1.",
+	// Generated proto types
+	".pb.go",
+}
+
+// trustedParamNames are parameter names that are typically framework-provided
+var trustedParamNames = map[string]bool{
+	"req":    true, // http.Request
+	"res":    true, // response
+	"resp":   true, // http.Response - typically from Do() which guarantees non-nil when err==nil
+	"w":      true, // http.ResponseWriter
+	"r":      true, // http.Request
+	"ctx":    true, // context.Context
+	"c":      true, // gin.Context
+	"t":      true, // testing.T
+	"b":      true, // testing.B
+	"ts":     true, // test server
+	"logger": true, // *zap.Logger
+	"log":    true, // logger
+	"l":      true, // logger
+	"cmd":    true, // exec.Cmd or cobra.Command - typically from Command() which guarantees non-nil
+	"f":      true, // flagset - typically from command.Flags() which guarantees non-nil
+	"opts":   true, // options - typically has a default or is validated
+	"opt":    true, // option
+	"cfg":    true, // config - typically validated
+	"config": true, // config
 }
 
 // File patterns to skip (generated code, etc.)
@@ -180,6 +247,23 @@ func checkFunction(reporter *nolint.Reporter, pass *analysis.Pass, fn *ast.FuncD
 	})
 }
 
+// isTrustedType checks if a type string matches any trusted type patterns
+func isTrustedType(typeStr string) bool {
+	// Check exact matches
+	if trustedPointerTypes[typeStr] {
+		return true
+	}
+
+	// Check patterns
+	for _, pattern := range trustedTypePatterns {
+		if strings.Contains(typeStr, pattern) {
+			return true
+		}
+	}
+
+	return false
+}
+
 // collectPointerParams returns a map of parameter names that are pointers
 func collectPointerParams(pass *analysis.Pass, fn *ast.FuncDecl) map[string]bool {
 	params := make(map[string]bool)
@@ -193,7 +277,7 @@ func collectPointerParams(pass *analysis.Pass, fn *ast.FuncDecl) map[string]bool
 		typeStr := types.ExprString(field.Type)
 
 		// Skip trusted pointer types (framework types that are never nil)
-		if trustedPointerTypes[typeStr] {
+		if isTrustedType(typeStr) {
 			continue
 		}
 
@@ -205,7 +289,7 @@ func collectPointerParams(pass *analysis.Pass, fn *ast.FuncDecl) map[string]bool
 			// *T - pointer type
 			// Check if it's a trusted type
 			fullType := "*" + types.ExprString(t.X)
-			if trustedPointerTypes[fullType] {
+			if isTrustedType(fullType) {
 				continue
 			}
 			isPtr = true
@@ -233,13 +317,21 @@ func collectPointerParams(pass *analysis.Pass, fn *ast.FuncDecl) map[string]bool
 		case *ast.SelectorExpr:
 			// pkg.Type - check if it's trusted
 			fullType := types.ExprString(t)
-			if trustedPointerTypes[fullType] {
+			if isTrustedType(fullType) {
+				continue
+			}
+			// Also check with pointer prefix
+			if isTrustedType("*" + fullType) {
 				continue
 			}
 		}
 
 		if isPtr {
 			for _, name := range field.Names {
+				// Skip trusted parameter names
+				if trustedParamNames[name.Name] {
+					continue
+				}
 				params[name.Name] = true
 			}
 		}

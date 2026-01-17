@@ -42,7 +42,32 @@ var Analyzer = &analysis.Analyzer{
 const (
 	warnThreshold  = 80  // Lines to trigger warning
 	errorThreshold = 120 // Lines to trigger error
+
+	// Extended thresholds for functions that are expected to be longer
+	extendedWarnThreshold  = 120
+	extendedErrorThreshold = 180
 )
+
+// exemptFuncPrefixes are function name prefixes that are allowed to be longer
+// These functions often require setup of multiple related components
+var exemptFuncPrefixes = []string{
+	"Init",  // Initialization functions (InitObservability, InitLogger, etc.)
+	"Setup", // Setup functions
+	"setup", // Lower-case setup functions
+	"load",  // Configuration loading functions
+	"Load",  // Configuration loading functions
+}
+
+// exemptFuncNames are specific function names that are allowed to be longer
+var exemptFuncNames = map[string]bool{
+	"Reconcile": true, // Kubernetes reconciler pattern
+	"runE":      true, // Cobra command entry point
+	"Run":       true, // Cobra command entry point (alternative)
+	"RunE":      true, // Cobra command entry point (exported)
+	"main":      true, // Main function
+	"handler":   true, // HTTP handler functions
+	"Handler":   true, // HTTP handler functions
+}
 
 func run(pass *analysis.Pass) (interface{}, error) {
 	reporter := nolint.NewReporter(pass)
@@ -69,25 +94,50 @@ func run(pass *analysis.Pass) (interface{}, error) {
 		endLine := pass.Fset.Position(fn.Body.Rbrace).Line
 		lines := endLine - startLine + 1
 
-		if lines < warnThreshold {
+		// Determine thresholds based on function name
+		warnLimit := warnThreshold
+		errorLimit := errorThreshold
+		if isExemptFunction(fn.Name.Name) {
+			warnLimit = extendedWarnThreshold
+			errorLimit = extendedErrorThreshold
+		}
+
+		if lines < warnLimit {
 			return
 		}
 
 		// Analyze function to provide specific advice
 		advice := analyzeFunction(fn)
 
-		if lines >= errorThreshold {
+		if lines >= errorLimit {
 			reporter.Reportf(fn.Pos(),
 				"function %s is %d lines (max %d); %s",
-				fn.Name.Name, lines, errorThreshold, advice)
-		} else if lines >= warnThreshold {
+				fn.Name.Name, lines, errorLimit, advice)
+		} else if lines >= warnLimit {
 			reporter.Reportf(fn.Pos(),
 				"function %s is %d lines (recommended max %d); %s",
-				fn.Name.Name, lines, warnThreshold, advice)
+				fn.Name.Name, lines, warnLimit, advice)
 		}
 	})
 
 	return nil, nil
+}
+
+// isExemptFunction checks if a function name should use extended thresholds
+func isExemptFunction(name string) bool {
+	// Check exact name matches
+	if exemptFuncNames[name] {
+		return true
+	}
+
+	// Check prefix matches
+	for _, prefix := range exemptFuncPrefixes {
+		if strings.HasPrefix(name, prefix) {
+			return true
+		}
+	}
+
+	return false
 }
 
 func analyzeFunction(fn *ast.FuncDecl) string {

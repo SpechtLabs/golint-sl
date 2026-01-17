@@ -140,8 +140,9 @@ func checkFunction(reporter *nolint.Reporter, pass *analysis.Pass, fn *ast.FuncD
 }
 
 func isFactoryFunction(name string) bool {
+	lowerName := strings.ToLower(name)
 	for _, pattern := range factoryPatterns {
-		if strings.HasPrefix(name, pattern) {
+		if strings.HasPrefix(lowerName, strings.ToLower(pattern)) {
 			return true
 		}
 	}
@@ -174,7 +175,9 @@ func isNonAcceptableInterface(pass *analysis.Pass, expr ast.Expr) bool {
 	}
 
 	// Check common interface names that are acceptable
-	if strings.HasSuffix(typeName, "error") {
+	// Error interfaces are idiomatic Go - allow both "error" and "Error" suffix
+	lowerTypeName := strings.ToLower(typeName)
+	if strings.HasSuffix(lowerTypeName, "error") || strings.HasSuffix(lowerTypeName, ".error") {
 		return false
 	}
 

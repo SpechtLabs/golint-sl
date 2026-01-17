@@ -195,10 +195,14 @@ func isAllowedFuncName(name string) bool {
 	allowedPrefixes := []string{
 		"Marshal", "Unmarshal", "Decode", "Encode",
 		"Get", "Load", "Read", // Generic getters in cache/store implementations
+		"Parse", "Convert", // Parsing/conversion functions that return different types
+		"Wrap", "Value", // Wrapper/value extraction patterns
 	}
 
+	// Also allow lowercase versions for private functions
+	lowerName := strings.ToLower(name)
 	for _, prefix := range allowedPrefixes {
-		if strings.HasPrefix(name, prefix) {
+		if strings.HasPrefix(name, prefix) || strings.HasPrefix(lowerName, strings.ToLower(prefix)) {
 			return true
 		}
 	}

@@ -22,9 +22,10 @@ This analyzer detects:
 3. Error variables returned without adding context about what failed
 
 Errors should be wrapped with context to create a clear error chain:
-  return fmt.Errorf("failed to create user: %w", err)
   return humane.Wrap(err, "failed to create user", "check database connection")
+  return fmt.Errorf("failed to create user: %w", err)
 
+Prefer humane.Wrap() as it provides actionable advice to users.
 Bare error returns make debugging difficult because you lose the stack context.`
 
 var Analyzer = &analysis.Analyzer{
@@ -206,8 +207,8 @@ func checkBareErrorReturn(reporter *nolint.Reporter, ret *ast.ReturnStmt, fn *as
 		// Only report if the function has meaningful operations (not just wrapping another call)
 		if hasMultipleOperations(fn) {
 			reporter.Reportf(ret.Pos(),
-				"returning error %q without wrapping; add context with fmt.Errorf(\"operation: %%w\", %s) or humane.Wrap()",
-				ident.Name, ident.Name)
+				"returning error %q without wrapping; add context with humane.Wrap(%s, message, advice...) or fmt.Errorf(\"operation: %%w\", %s)",
+				ident.Name, ident.Name, ident.Name)
 		}
 	}
 }

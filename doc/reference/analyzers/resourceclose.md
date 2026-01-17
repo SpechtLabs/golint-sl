@@ -103,6 +103,41 @@ defer resource.Close()  // Immediately after error check
 // Use resource...
 ```
 
+### Deferred Anonymous Functions
+
+The analyzer also detects close calls inside deferred anonymous functions:
+
+```go
+resp, err := http.Get(url)
+if err != nil {
+    return nil, err
+}
+defer func() { _ = resp.Body.Close() }()  // Also detected
+```
+
+### Test Cleanup
+
+In tests, `t.Cleanup()` is recognized as a valid close pattern:
+
+```go
+func TestFetch(t *testing.T) {
+    f, err := os.CreateTemp("", "test")
+    require.NoError(t, err)
+    t.Cleanup(func() { _ = f.Close() })  // Recognized as close
+}
+```
+
+## Excluded Resources
+
+Standard streams (`os.Stdout`, `os.Stderr`, `os.Stdin`) are excluded - these should never be closed by user code:
+
+```go
+func printOutput() {
+    output := os.Stdout  // Not flagged - shouldn't close stdout
+    fmt.Fprintln(output, "message")
+}
+```
+
 ## Configuration
 
 ```yaml

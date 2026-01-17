@@ -186,20 +186,55 @@ func getContextParam(fn *ast.FuncDecl) string {
 	return ""
 }
 
+// contextMethods are methods on context.Context that represent meaningful usage
+// When these are called, the context IS being used even if not passed to sub-calls
+var contextMethods = map[string]bool{
+	"Done":     true, // ctx.Done() for cancellation
+	"Deadline": true, // ctx.Deadline() for timeout checking
+	"Err":      true, // ctx.Err() for error checking
+	"Value":    true, // ctx.Value() for retrieving values
+}
+
 // checkContextUsed verifies the context parameter is actually used AND passed to sub-calls
 func checkContextUsed(reporter *nolint.Reporter, fn *ast.FuncDecl, ctxParam string) {
 	if fn.Body == nil {
 		return
 	}
 
-	usedInCall := false    // ctx passed as argument to a function call
-	usedOtherwise := false // ctx used in any other way (select, assignment, etc.)
+	usedInCall := false        // ctx passed as argument to a function call
+	usedContextMethod := false // ctx methods called (ctx.Done(), ctx.Err(), etc.)
+	storedInField := false     // ctx stored in a struct field (m.ctx = ctx)
+	usedOtherwise := false     // ctx used in any other way (select, assignment, etc.)
 	hasFunctionCalls := false
 
 	ast.Inspect(fn.Body, func(n ast.Node) bool {
 		switch node := n.(type) {
+		case *ast.AssignStmt:
+			// Check if context is being stored in a field (e.g., m.ctx = ctx)
+			for i, rhs := range node.Rhs {
+				if ident, ok := rhs.(*ast.Ident); ok && ident.Name == ctxParam {
+					// Check if LHS is a field selector (m.ctx, s.context, etc.)
+					if i < len(node.Lhs) {
+						if _, ok := node.Lhs[i].(*ast.SelectorExpr); ok {
+							storedInField = true
+						}
+					}
+				}
+			}
+
 		case *ast.CallExpr:
 			hasFunctionCalls = true
+
+			// Check if this is a method call on the context (ctx.Done(), ctx.Err(), etc.)
+			if sel, ok := node.Fun.(*ast.SelectorExpr); ok {
+				if ident, ok := sel.X.(*ast.Ident); ok {
+					if ident.Name == ctxParam && contextMethods[sel.Sel.Name] {
+						usedContextMethod = true
+						return true
+					}
+				}
+			}
+
 			// Check if ctx is passed as an argument
 			for _, arg := range node.Args {
 				if containsIdent(arg, ctxParam) {
@@ -217,7 +252,13 @@ func checkContextUsed(reporter *nolint.Reporter, fn *ast.FuncDecl, ctxParam stri
 		return true
 	})
 
-	if !usedInCall && !usedOtherwise {
+	// Context is meaningfully used if:
+	// 1. Passed to a sub-call, OR
+	// 2. A context method is called (Done, Deadline, Err, Value), OR
+	// 3. Stored in a struct field for later use
+	contextMeaningfullyUsed := usedInCall || usedContextMethod || storedInField
+
+	if !contextMeaningfullyUsed && !usedOtherwise {
 		if ctxParam == "_" {
 			reporter.Reportf(fn.Pos(),
 				"context parameter is explicitly ignored with '_'; this breaks tracing and cancellation propagation")
@@ -226,8 +267,8 @@ func checkContextUsed(reporter *nolint.Reporter, fn *ast.FuncDecl, ctxParam stri
 				"context parameter %q is received but never used; pass it to sub-calls or remove it",
 				ctxParam)
 		}
-	} else if !usedInCall && hasFunctionCalls && !isSimpleFunction(fn) {
-		// Context is used but not passed to any sub-calls
+	} else if !contextMeaningfullyUsed && hasFunctionCalls && !isSimpleFunction(fn) {
+		// Context is referenced but not used meaningfully (not passed to calls, no methods called)
 		// This might indicate missing context propagation
 		if ctxParam == "_" {
 			reporter.Reportf(fn.Pos(),

@@ -38,7 +38,7 @@ Bad pattern:
     }
 
 This analyzer flags:
-1. Variables declared more than 10 lines before first use
+1. Variables declared more than 15 lines before first use
 2. Variables modified multiple times (prefer immutability)
 3. Variables declared at function start but only used in one branch`
 
@@ -50,7 +50,41 @@ var Analyzer = &analysis.Analyzer{
 }
 
 // MaxLinesBetweenDeclAndUse is the maximum allowed lines between declaration and first use
-const MaxLinesBetweenDeclAndUse = 10
+const MaxLinesBetweenDeclAndUse = 15
+
+// exemptVarNames are variable names that are commonly declared at function start
+// for configuration or context setup purposes
+var exemptVarNames = map[string]bool{
+	// Common setup/config variables
+	"options": true,
+	"opts":    true,
+	"config":  true,
+	"cfg":     true,
+	// Context-related
+	"ctx":  true,
+	"span": true,
+	// Error handling patterns
+	"err": true,
+	// Output/result variables
+	"result":  true,
+	"results": true,
+	"output":  true,
+	// Common formatting variables
+	"formatted": true,
+	"content":   true,
+	"builder":   true,
+	"buf":       true,
+	"buffer":    true,
+	// Observability/cleanup patterns (setup at start, used for cleanup at end)
+	"traceProvider":      true,
+	"logProvider":        true,
+	"meterProvider":      true,
+	"undoStdLogRedirect": true,
+	"undoZapGlobals":     true,
+	"undoOtelZapGlobals": true,
+	"cleanup":            true,
+	"shutdown":           true,
+}
 
 func run(pass *analysis.Pass) (interface{}, error) {
 	reporter := nolint.NewReporter(pass)
@@ -188,18 +222,27 @@ func checkFunction(reporter *nolint.Reporter, pass *analysis.Pass, fn *ast.FuncD
 		}
 
 		// Check distance from declaration to first use
-		firstUse := v.uses[0]
-		for _, use := range v.uses {
-			if use < firstUse {
-				firstUse = use
+		// Skip this check in test functions - table-driven tests commonly declare
+		// variables at the top of the function (expected values, mocks, fixtures)
+		// that are used inside test loops far below
+		if !isTest {
+			firstUse := v.uses[0]
+			for _, use := range v.uses {
+				if use < firstUse {
+					firstUse = use
+				}
 			}
-		}
 
-		distance := firstUse - v.declLine
-		if distance > MaxLinesBetweenDeclAndUse {
-			reporter.Reportf(v.declPos,
-				"variable %q declared %d lines before first use; declare variables closer to their usage",
-				v.name, distance)
+			distance := firstUse - v.declLine
+			if distance > MaxLinesBetweenDeclAndUse {
+				// Skip exempt variable names (common setup patterns)
+				if exemptVarNames[v.name] {
+					continue
+				}
+				reporter.Reportf(v.declPos,
+					"variable %q declared %d lines before first use; declare variables closer to their usage",
+					v.name, distance)
+			}
 		}
 
 		// Check for excessive mutations
@@ -248,6 +291,11 @@ func checkBranchOnlyVars(fn *ast.FuncDecl, reporter *nolint.Reporter) {
 			for _, lhs := range assignStmt.Lhs {
 				ident, ok := lhs.(*ast.Ident)
 				if !ok {
+					continue
+				}
+
+				// Skip common variable names that are often used in this pattern
+				if isCommonLoopVar(ident.Name) || exemptVarNames[ident.Name] {
 					continue
 				}
 

@@ -47,7 +47,27 @@ func ProcessOrder(orderID string) error {
 }
 ```
 
-### Good
+### Good: Using humane.Wrap (Recommended)
+
+```go
+func ProcessOrder(orderID string) humane.Error {
+    order, err := db.GetOrder(orderID)
+    if err != nil {
+        return humane.Wrap(err, "failed to get order",
+            "verify order ID exists in the database",
+            "check database connectivity")
+    }
+
+    if err := validateOrder(order); err != nil {
+        return humane.Wrap(err, "order validation failed",
+            "review the order details for required fields")
+    }
+
+    return nil
+}
+```
+
+### Good: Using fmt.Errorf
 
 ```go
 func ProcessOrder(orderID string) error {
@@ -64,9 +84,17 @@ func ProcessOrder(orderID string) error {
 }
 ```
 
+## Prefer humane.Wrap()
+
+When possible, use `humane.Wrap()` instead of `fmt.Errorf()`:
+
+- Provides actionable advice to users
+- Creates structured error messages
+- Enables better error presentation in CLIs
+
 ## The %w Verb
 
-Use `%w` (not `%v` or `%s`) to wrap errors:
+If using `fmt.Errorf`, use `%w` (not `%v` or `%s`) to wrap errors:
 
 ```go
 // Good: preserves error chain for errors.Is/As

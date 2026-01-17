@@ -32,9 +32,17 @@ var Analyzer = &analysis.Analyzer{
 }
 
 const (
-	maxConstructorParams = 3 // Constructors with more params should use options
-	optionFuncPrefix     = "With"
+	maxConstructorParams = 4 // Constructors with more params should use options
 )
+
+// validOptionFuncPrefixes are prefixes that are valid for functions returning Option types
+var validOptionFuncPrefixes = []string{
+	"With",    // WithTimeout, WithLogger - primary prefix
+	"Allow",   // AllowInsecure, AllowRetry
+	"Enable",  // EnableDebug, EnableMetrics
+	"Disable", // DisableCache, DisableRetry
+	"Set",     // SetTimeout, SetMaxRetries
+}
 
 func run(pass *analysis.Pass) (interface{}, error) {
 	reporter := nolint.NewReporter(pass)
@@ -171,13 +179,23 @@ func checkConstructorPattern(reporter *nolint.Reporter, fn *ast.FuncDecl, option
 	}
 }
 
-// checkOptionFunctionNaming ensures With* functions that return Option types are proper
+// checkOptionFunctionNaming ensures option functions that return Option types are properly named
 func checkOptionFunctionNaming(reporter *nolint.Reporter, fn *ast.FuncDecl, optionTypes map[string]bool) {
 	if fn.Name == nil || fn.Type.Results == nil {
 		return
 	}
 
 	name := fn.Name.Name
+
+	// Skip private functions (lowercase first letter) - they don't need public naming conventions
+	if len(name) > 0 && name[0] >= 'a' && name[0] <= 'z' {
+		return
+	}
+
+	// Skip "Default*" functions - these return sets of default options, not individual options
+	if strings.HasPrefix(name, "Default") {
+		return
+	}
 
 	// Check functions that return Option types
 	for _, result := range fn.Type.Results.List {
@@ -188,10 +206,10 @@ func checkOptionFunctionNaming(reporter *nolint.Reporter, fn *ast.FuncDecl, opti
 			continue
 		}
 
-		// Option-returning functions should start with "With"
-		if !strings.HasPrefix(name, optionFuncPrefix) {
+		// Option-returning functions should start with a valid prefix
+		if !hasValidOptionPrefix(name) {
 			reporter.Reportf(fn.Pos(),
-				"function %q returns Option but doesn't start with 'With'; rename to With%s",
+				"function %q returns Option but doesn't use a standard option prefix (With, Allow, Enable, Disable, Set); rename to With%s",
 				name, name)
 		}
 
@@ -200,7 +218,7 @@ func checkOptionFunctionNaming(reporter *nolint.Reporter, fn *ast.FuncDecl, opti
 	}
 
 	// Functions starting with "With" that don't return Option are suspicious
-	if strings.HasPrefix(name, optionFuncPrefix) {
+	if strings.HasPrefix(name, "With") {
 		returnsOption := false
 		for _, result := range fn.Type.Results.List {
 			resultType := types.ExprString(result.Type)
@@ -216,6 +234,16 @@ func checkOptionFunctionNaming(reporter *nolint.Reporter, fn *ast.FuncDecl, opti
 				name)
 		}
 	}
+}
+
+// hasValidOptionPrefix checks if a function name starts with any valid option prefix
+func hasValidOptionPrefix(name string) bool {
+	for _, prefix := range validOptionFuncPrefixes {
+		if strings.HasPrefix(name, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // checkOptionFunctionBody ensures option functions follow the closure pattern

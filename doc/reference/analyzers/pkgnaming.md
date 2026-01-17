@@ -75,6 +75,12 @@ type Client struct{}        // httputil.Client is clear
    Bad: user_service, httpClient, Config
    ```
 
+   **Exception:** External test packages (`*_test`) are allowed as this is Go's standard convention for black-box testing:
+
+   ```text
+   Allowed: user_test (external test package for user)
+   ```
+
 2. **Singular, not plural**
 
    ```text

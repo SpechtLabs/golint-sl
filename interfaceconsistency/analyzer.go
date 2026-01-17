@@ -82,9 +82,16 @@ func run(pass *analysis.Pass) (interface{}, error) {
 		}
 	})
 
+	// Track current file's test status
+	var currentFileIsTest bool
+
 	// Second pass: analyze usage
 	inspect.Preorder(nodeFilter, func(n ast.Node) {
 		switch node := n.(type) {
+		case *ast.File:
+			filename := pass.Fset.Position(node.Pos()).Filename
+			currentFileIsTest = strings.HasSuffix(filename, "_test.go")
+
 		case *ast.TypeSpec:
 			if st, ok := node.Type.(*ast.StructType); ok {
 				checkStructFieldsUseInterfaces(reporter, pass, node, st)
@@ -92,7 +99,7 @@ func run(pass *analysis.Pass) (interface{}, error) {
 
 		case *ast.FuncDecl:
 			checkConstructorReturnsInterface(reporter, node, interfaces)
-			checkDependencyInjection(reporter, node)
+			checkDependencyInjection(reporter, node, currentFileIsTest)
 		}
 	})
 
@@ -197,8 +204,13 @@ func checkConstructorReturnsInterface(reporter *nolint.Reporter, fn *ast.FuncDec
 }
 
 // checkDependencyInjection ensures dependencies are injected, not created internally
-func checkDependencyInjection(reporter *nolint.Reporter, fn *ast.FuncDecl) {
+func checkDependencyInjection(reporter *nolint.Reporter, fn *ast.FuncDecl, isTestFile bool) {
 	if fn.Body == nil {
+		return
+	}
+
+	// Skip test files - creating mocks/fixtures inline in tests is standard practice
+	if isTestFile {
 		return
 	}
 

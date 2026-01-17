@@ -83,12 +83,33 @@ type UserGetter interface {
 
 ### Exceptions
 
-Factory functions for plugin systems may return interfaces:
+The analyzer exempts several common patterns:
+
+**Factory Functions:** Functions with these prefixes are exempt:
+
+- `New`, `Create`, `Build`, `Make`, `Get`, `Open`, `Connect`
+
+**Error Interfaces:** Functions returning error interfaces are exempt:
+
+- Standard `error` type
+- Custom error types like `MyError`, `humane.Error`
+
+**Standard Library Interfaces:**
+
+- `io.Reader`, `io.Writer`, `io.Closer`, `io.ReadCloser`
+- `context.Context`
+- `http.Handler`, `http.RoundTripper`
+- `fmt.Stringer`, `sort.Interface`
 
 ```go
 // Plugin system - interface return is appropriate
 func LoadPlugin(path string) (Plugin, error) {
     // Returns interface because implementation is unknown
+}
+
+// Error interfaces are fine
+func ProcessData(data []byte) humane.Error {
+    // ...
 }
 ```
 

@@ -14,6 +14,18 @@ Clean Code
 
 This analyzer detects variables declared far from where they're used.
 
+**Threshold:** Variables declared more than 15 lines before first use are flagged.
+
+**Exempt Variable Names:**
+
+Common setup/configuration variable names are exempt from the distance check:
+
+- Configuration: `options`, `opts`, `config`, `cfg`
+- Context: `ctx`, `span`
+- Output: `result`, `results`, `output`, `formatted`, `content`
+- Buffers: `builder`, `buf`, `buffer`
+- Observability: `traceProvider`, `logProvider`, `cleanup`, `shutdown`
+
 ## Why It Matters
 
 Variables declared far from usage:
@@ -78,6 +90,33 @@ func Process(items []Item) int {
     return total
 }
 ```
+
+## Allowed Patterns
+
+### Table-Driven Tests
+
+Variables commonly used in table-driven tests are allowed at the start of test functions:
+
+```go
+func TestProcess(t *testing.T) {
+    tests := []struct {  // OK - standard table-driven test pattern
+        name     string
+        input    int
+        expected int
+    }{
+        {"positive", 5, 10},
+        {"negative", -3, -6},
+    }
+
+    for _, tt := range tests {
+        t.Run(tt.name, func(t *testing.T) {
+            // ...
+        })
+    }
+}
+```
+
+Allowed variable names: `tests`, `testCases`, `cases`, `tt`, `tc`, `tcs`, `scenarios`.
 
 ## Configuration
 
