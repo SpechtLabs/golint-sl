@@ -90,8 +90,8 @@ func checkPackageName(reporter *nolint.Reporter, pass *analysis.Pass, name strin
 		}
 	}
 
-	// Check for underscores
-	if strings.Contains(name, "_") {
+	// Check for underscores (but allow *_test packages - Go's external test convention)
+	if strings.Contains(name, "_") && !strings.HasSuffix(name, "_test") {
 		if len(pass.Files) > 0 {
 			reporter.Reportf(pass.Files[0].Package,
 				"package name %q contains underscore; use a single lowercase word",

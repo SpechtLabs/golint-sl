@@ -301,6 +301,26 @@ type resourceInfo struct {
 	message    string
 }
 
+// isStdioAssignment checks if the RHS is os.Stdout, os.Stderr, or os.Stdin
+func isStdioAssignment(rhs ast.Expr) bool {
+	sel, ok := rhs.(*ast.SelectorExpr)
+	if !ok {
+		return false
+	}
+	ident, ok := sel.X.(*ast.Ident)
+	if !ok {
+		return false
+	}
+	if ident.Name != "os" {
+		return false
+	}
+	switch sel.Sel.Name {
+	case "Stdout", "Stderr", "Stdin":
+		return true
+	}
+	return false
+}
+
 func checkAssignment(pass *analysis.Pass, assign *ast.AssignStmt, resourceVars map[string]resourceInfo) {
 	// Check each assigned variable
 	for i, lhs := range assign.Lhs {
@@ -309,22 +329,23 @@ func checkAssignment(pass *analysis.Pass, assign *ast.AssignStmt, resourceVars m
 			continue
 		}
 
-		// Skip standard streams (os.Stdout, os.Stderr, os.Stdin)
-		if isStandardStream(assign.Rhs, i) {
+		// Get the RHS expression
+		var rhsExpr ast.Expr
+		if i < len(assign.Rhs) {
+			rhsExpr = assign.Rhs[i]
+		} else if len(assign.Rhs) == 1 {
+			rhsExpr = assign.Rhs[0]
+		}
+
+		// Skip os.Stdout, os.Stderr, os.Stdin - these shouldn't be closed
+		if rhsExpr != nil && isStdioAssignment(rhsExpr) {
 			continue
 		}
 
 		// Get the type of the RHS if possible
 		var rhsType types.Type
-		if i < len(assign.Rhs) {
-			rhsType = pass.TypesInfo.TypeOf(assign.Rhs[i])
-		} else if len(assign.Rhs) == 1 {
-			// Multiple return values
-			if tuple, ok := pass.TypesInfo.TypeOf(assign.Rhs[0]).(*types.Tuple); ok {
-				if i < tuple.Len() {
-					rhsType = tuple.At(i).Type()
-				}
-			}
+		if rhsExpr != nil {
+			rhsType = pass.TypesInfo.TypeOf(rhsExpr)
 		}
 
 		if rhsType == nil {
@@ -384,30 +405,6 @@ func isCreateFunc(funcName string, createFuncs []string) bool {
 			return true
 		}
 	}
-	return false
-}
-
-// isStandardStream checks if the RHS is os.Stdout, os.Stderr, or os.Stdin
-func isStandardStream(rhs []ast.Expr, idx int) bool {
-	if idx >= len(rhs) {
-		return false
-	}
-
-	sel, ok := rhs[idx].(*ast.SelectorExpr)
-	if !ok {
-		return false
-	}
-
-	ident, ok := sel.X.(*ast.Ident)
-	if !ok || ident.Name != "os" {
-		return false
-	}
-
-	switch sel.Sel.Name {
-	case "Stdout", "Stderr", "Stdin":
-		return true
-	}
-
 	return false
 }
 

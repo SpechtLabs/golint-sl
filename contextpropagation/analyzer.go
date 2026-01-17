@@ -71,9 +71,39 @@ var exemptFunctions = map[string]bool{
 	"BenchmarkMain": true,
 }
 
+// isMockPackage checks if the current package is a mock package
+func isMockPackage(pass *analysis.Pass) bool {
+	pkgPath := pass.Pkg.Path()
+	pkgName := pass.Pkg.Name()
+	return strings.Contains(pkgPath, "/mock") ||
+		strings.HasSuffix(pkgPath, "/mock") ||
+		pkgName == "mock" ||
+		strings.HasPrefix(pkgName, "mock")
+}
+
+// isMockFunction checks if a function is on a mock type (receiver starts with Mock)
+func isMockFunction(fn *ast.FuncDecl) bool {
+	if fn.Recv == nil || len(fn.Recv.List) == 0 {
+		return false
+	}
+	// Check receiver type
+	recv := fn.Recv.List[0]
+	typeName := ""
+	switch t := recv.Type.(type) {
+	case *ast.Ident:
+		typeName = t.Name
+	case *ast.StarExpr:
+		if ident, ok := t.X.(*ast.Ident); ok {
+			typeName = ident.Name
+		}
+	}
+	return strings.HasPrefix(typeName, "Mock") || strings.HasPrefix(typeName, "mock")
+}
+
 func run(pass *analysis.Pass) (interface{}, error) {
 	reporter := nolint.NewReporter(pass)
 	inspect := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
+	isMockPkg := isMockPackage(pass)
 
 	nodeFilter := []ast.Node{
 		(*ast.FuncDecl)(nil),
@@ -107,6 +137,11 @@ func run(pass *analysis.Pass) (interface{}, error) {
 
 		// Skip test functions (they often use context.Background intentionally)
 		if fn.Name != nil && strings.HasPrefix(fn.Name.Name, "Test") {
+			return
+		}
+
+		// Skip mock packages and mock type methods - mocks often don't propagate context
+		if isMockPkg || isMockFunction(fn) {
 			return
 		}
 

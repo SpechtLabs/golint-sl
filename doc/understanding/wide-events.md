@@ -311,6 +311,41 @@ func (e *RequestEvent) Log(logger *zap.Logger) {
 }
 ```
 
+## OpenTelemetry Integration with otelzap
+
+For projects using OpenTelemetry, [otelzap](https://github.com/spechtlabs/go-otel-utils) provides context-aware logging that automatically extracts trace context:
+
+```go
+import "github.com/spechtlabs/go-otel-utils/otelzap"
+
+func ProcessRequest(ctx context.Context, req *Request) error {
+    // otelzap's *Context methods automatically extract trace_id and span_id from ctx
+    // No need to manually add these fields!
+    otelzap.L().InfoContext(ctx, "request processed",
+        zap.String("request_id", req.ID),
+        zap.String("user_id", req.UserID),
+        zap.Duration("duration", duration),
+    )
+    return nil
+}
+```
+
+### Method Chaining
+
+otelzap supports method chaining for adding error context:
+
+```go
+// WithError adds the error as a structured field
+if err != nil {
+    otelzap.L().WithError(err).ErrorContext(ctx, "operation failed")
+}
+
+// Equivalent to:
+otelzap.L().ErrorContext(ctx, "operation failed", zap.Error(err))
+```
+
+The `wideevents` analyzer recognizes these patterns and won't flag them for "missing structured fields" or "missing request context".
+
 ## Debug Logging
 
 The `wideevents` analyzer allows `zap.Debug` for development:

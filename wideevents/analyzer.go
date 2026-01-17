@@ -102,22 +102,38 @@ var bannedLogPatterns = map[string]string{
 
 // Traditional logging methods that should be replaced with wide events
 var traditionalLogMethods = map[string]bool{
-	"Info":   true,
-	"Infof":  true,
-	"Infow":  true,
-	"Warn":   true,
-	"Warnf":  true,
-	"Warnw":  true,
-	"Error":  true,
-	"Errorf": true,
-	"Errorw": true,
+	"Info":         true,
+	"Infof":        true,
+	"Infow":        true,
+	"InfoContext":  true, // otelzap context-aware methods
+	"Warn":         true,
+	"Warnf":        true,
+	"Warnw":        true,
+	"WarnContext":  true, // otelzap context-aware methods
+	"Error":        true,
+	"Errorf":       true,
+	"Errorw":       true,
+	"ErrorContext": true, // otelzap context-aware methods
+	"Fatal":        true,
+	"Fatalf":       true,
+	"Fatalw":       true,
+	"FatalContext": true, // otelzap context-aware methods
 }
 
 // Debug methods are allowed (for development)
 var allowedDebugMethods = map[string]bool{
-	"Debug":  true,
-	"Debugf": true,
-	"Debugw": true,
+	"Debug":        true,
+	"Debugf":       true,
+	"Debugw":       true,
+	"DebugContext": true, // otelzap context-aware methods
+}
+
+// Method chaining methods that add fields (otelzap/zap patterns)
+var fieldChainMethods = map[string]bool{
+	"WithError":   true, // otelzap.L().WithError(err)
+	"With":        true, // logger.With(zap.String(...))
+	"WithOptions": true, // logger.WithOptions(...)
+	"Named":       true, // logger.Named("name") - adds logger name as context
 }
 
 // Required context fields for wide events
@@ -143,9 +159,20 @@ var spanSetAttributesMethods = map[string]bool{
 	"SetStatus":     true, // setting status is also valid span usage
 }
 
+// isCLIPackage checks if the package path indicates CLI code where fmt.Print is acceptable
+func isCLIPackage(pass *analysis.Pass) bool {
+	pkgPath := pass.Pkg.Path()
+	// Allow fmt.Print in cmd/ directories (CLI code) and internal/cli
+	return strings.Contains(pkgPath, "/cmd/") ||
+		strings.Contains(pkgPath, "/cli/") ||
+		strings.HasSuffix(pkgPath, "/cmd") ||
+		strings.HasSuffix(pkgPath, "/cli")
+}
+
 func run(pass *analysis.Pass) (interface{}, error) {
 	reporter := nolint.NewReporter(pass)
 	inspect := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
+	isCLI := isCLIPackage(pass)
 
 	nodeFilter := []ast.Node{
 		(*ast.FuncDecl)(nil),
@@ -176,16 +203,13 @@ func run(pass *analysis.Pass) (interface{}, error) {
 			return
 		}
 
-		// Determine if this is a CLI package (cmd/ directory or cli/ directory)
-		isCLIPackage := strings.Contains(filePath, "/cmd/") || strings.Contains(filePath, "/cli/")
-
-		checkFunction(reporter, fn, isCLIPackage)
+		checkFunction(reporter, fn, isCLI)
 	})
 
 	return nil, nil
 }
 
-func checkFunction(reporter *nolint.Reporter, fn *ast.FuncDecl, isCLIPackage bool) {
+func checkFunction(reporter *nolint.Reporter, fn *ast.FuncDecl, isCLI bool) {
 	var logCalls []*logCallInfo
 	var logsInLoops []*ast.CallExpr
 
@@ -211,8 +235,8 @@ func checkFunction(reporter *nolint.Reporter, fn *ast.FuncDecl, isCLIPackage boo
 			return false // Don't recurse again
 
 		case *ast.CallExpr:
-			// Check banned patterns first (but allow fmt.Print* in CLI packages)
-			checkBannedLogPatterns(reporter, node, isCLIPackage)
+			// Check banned patterns first (skip fmt.Print* in CLI code)
+			checkBannedLogPatterns(reporter, node, isCLI)
 
 			// Check for span usage
 			if isSpanFromContextCall(node) {
@@ -294,7 +318,18 @@ type logCallInfo struct {
 	isDebug             bool
 	isTraditionalLog    bool
 	hasStructuredFields bool
+	hasContextMethod    bool // true if method is *Context (e.g., ErrorContext, InfoContext)
 	fieldNames          []string
+}
+
+// contextAwareMethods are methods that accept context.Context as first argument
+// and automatically extract trace context (trace_id, span_id) from it
+var contextAwareMethods = map[string]bool{
+	"ErrorContext": true, // otelzap context-aware methods
+	"InfoContext":  true,
+	"WarnContext":  true,
+	"DebugContext": true,
+	"FatalContext": true,
 }
 
 // zapFieldMethods are methods on the zap package that return zap.Field, not log calls
@@ -345,6 +380,7 @@ func analyzeLogCall(call *ast.CallExpr) *logCallInfo {
 	// Check if this is a zap logger call
 	isZapCall := false
 	isLoggerMethod := false
+	hasChainedFields := false
 
 	// Check for logger.Info(), logger.Error(), etc.
 	if traditionalLogMethods[method] || allowedDebugMethods[method] {
@@ -369,7 +405,7 @@ func analyzeLogCall(call *ast.CallExpr) *logCallInfo {
 			if name == "got" || name == "want" || name == "expected" || name == "actual" {
 				return nil
 			}
-			if strings.Contains(name, "log") || strings.Contains(name, "logger") || name == "l" {
+			if strings.Contains(name, "log") || strings.Contains(name, "logger") || strings.Contains(name, "zap") || name == "l" {
 				isZapCall = true
 			}
 		case *ast.SelectorExpr:
@@ -380,13 +416,15 @@ func analyzeLogCall(call *ast.CallExpr) *logCallInfo {
 				if fieldName == "err" || strings.Contains(fieldName, "error") {
 					return nil
 				}
-				if strings.Contains(fieldName, "log") || strings.Contains(fieldName, "logger") {
+				if strings.Contains(fieldName, "log") || strings.Contains(fieldName, "logger") || strings.Contains(fieldName, "zap") {
 					isZapCall = true
 				}
 			}
 		case *ast.CallExpr:
-			// Could be zap.L().Info() or similar
+			// Could be zap.L().Info(), otelzap.L().WithError(err).ErrorContext(), etc.
 			isZapCall = true
+			// Check for method chaining that adds fields
+			hasChainedFields = hasFieldChaining(x)
 		}
 	}
 
@@ -416,10 +454,17 @@ func analyzeLogCall(call *ast.CallExpr) *logCallInfo {
 		method:           method,
 		isDebug:          allowedDebugMethods[method],
 		isTraditionalLog: traditionalLogMethods[method],
+		hasContextMethod: contextAwareMethods[method],
 	}
 
 	// Check for structured fields in arguments
 	info.hasStructuredFields, info.fieldNames = hasStructuredFields(call)
+
+	// If method chaining adds fields, mark as having structured fields
+	if hasChainedFields {
+		info.hasStructuredFields = true
+		info.fieldNames = append(info.fieldNames, "error") // WithError adds error field
+	}
 
 	// Only return if this looks like a logging call
 	if isZapCall || isLoggerMethod {
@@ -427,6 +472,23 @@ func analyzeLogCall(call *ast.CallExpr) *logCallInfo {
 	}
 
 	return nil
+}
+
+// hasFieldChaining checks if a call expression has method chaining that adds fields
+// e.g., otelzap.L().WithError(err) or logger.With(zap.String(...))
+func hasFieldChaining(call *ast.CallExpr) bool {
+	// Check if this call is a field-adding method
+	if sel, ok := call.Fun.(*ast.SelectorExpr); ok {
+		methodName := sel.Sel.Name
+		if fieldChainMethods[methodName] {
+			return true
+		}
+		// Recurse into the receiver to check for nested chaining
+		if innerCall, ok := sel.X.(*ast.CallExpr); ok {
+			return hasFieldChaining(innerCall)
+		}
+	}
+	return false
 }
 
 func hasStructuredFields(call *ast.CallExpr) (bool, []string) {
@@ -463,14 +525,14 @@ func hasStructuredFields(call *ast.CallExpr) (bool, []string) {
 	return len(fieldNames) > 0, fieldNames
 }
 
-func checkBannedLogPatterns(reporter *nolint.Reporter, call *ast.CallExpr, isCLIPackage bool) {
+func checkBannedLogPatterns(reporter *nolint.Reporter, call *ast.CallExpr, isCLI bool) {
 	callName := getCallName(call)
 	if callName == "" {
 		return
 	}
 
-	// Allow fmt.Print* in CLI packages - these are user output, not logging
-	if isCLIPackage && (callName == "fmt.Print" || callName == "fmt.Printf" || callName == "fmt.Println") {
+	// Skip fmt.Print* in CLI code - it's used for user output, not logging
+	if isCLI && (callName == "fmt.Print" || callName == "fmt.Printf" || callName == "fmt.Println") {
 		return
 	}
 
@@ -480,6 +542,13 @@ func checkBannedLogPatterns(reporter *nolint.Reporter, call *ast.CallExpr, isCLI
 }
 
 func checkWideEventContext(reporter *nolint.Reporter, info *logCallInfo) {
+	// Context-aware methods (*Context like ErrorContext, InfoContext) automatically
+	// extract trace context (trace_id, span_id) from the context parameter,
+	// so they don't need explicit request context fields
+	if info.hasContextMethod {
+		return
+	}
+
 	// Check if the log has any of the required context fields
 	hasContext := false
 	for _, field := range info.fieldNames {

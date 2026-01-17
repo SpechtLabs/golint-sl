@@ -14,11 +14,20 @@ Observability
 
 This analyzer enforces the philosophy from [loggingsucks.com](https://loggingsucks.com/):
 
-1. Banned loggers (logrus, stdlib log, fmt.Print)
-2. Single event per function (no scattered logs)
-3. Structured fields on log calls
-4. Request context in wide events
-5. **Span attributes when context is available** - if you have a `context.Context`, use `trace.SpanFromContext(ctx)` and add attributes to the span
+1. **Banned loggers** - logrus, stdlib log, fmt.Print (use zap instead)
+2. **Single event per function** - no scattered logs (consider emitting one wide event)
+3. **Structured fields on log calls** - use `zap.String()`, `zap.Error()`, etc.
+4. **Request context in wide events** - include trace_id, request_id, or span_id
+5. **Span attributes when context is available** - use `trace.SpanFromContext(ctx)` and `span.SetAttributes()`
+
+### Supported Logging Frameworks
+
+- **zap** - `zap.L().Info()`, `zap.L().Error()`, etc.
+- **otelzap** - `otelzap.L().InfoContext()`, `otelzap.L().WithError().ErrorContext()`, etc.
+
+The analyzer recognizes:
+- Context-aware methods (`*Context` suffix) that auto-extract trace context
+- Method chaining (`.WithError()`, `.With()`) that adds structured fields
 
 ## Why It Matters
 
@@ -185,6 +194,34 @@ func ProcessRequest(ctx context.Context, req *Request) error {
 zap.L().Debug("intermediate state", zap.Any("data", data))  // OK
 ```
 
+### Context-Aware Methods (otelzap)
+
+Methods ending in `Context` (like `ErrorContext`, `InfoContext`, `WarnContext`) automatically extract trace context from the `context.Context` parameter, so they don't need explicit `trace_id`/`span_id` fields:
+
+```go
+import "github.com/spechtlabs/go-otel-utils/otelzap"
+
+func ProcessRequest(ctx context.Context, req *Request) error {
+    // OK - ErrorContext automatically extracts trace_id/span_id from ctx
+    otelzap.L().ErrorContext(ctx, "request failed",
+        zap.String("request_id", req.ID),
+    )
+    return err
+}
+```
+
+### Method Chaining
+
+Fields added via method chaining (`.WithError()`, `.With()`, etc.) are recognized as structured fields:
+
+```go
+// OK - WithError adds structured error field
+otelzap.L().WithError(err).ErrorContext(ctx, "operation failed")
+
+// OK - With adds structured fields
+logger.With(zap.String("component", "api")).Info("starting")
+```
+
 ### Test Functions
 
 Logging in tests is not checked:
@@ -192,6 +229,17 @@ Logging in tests is not checked:
 ```go
 func TestProcess(t *testing.T) {
     log.Println("test output")  // OK in tests
+}
+```
+
+### CLI Output
+
+`fmt.Print*` functions are allowed in CLI packages (`cmd/` and `cli/` directories) since they're used for user output, not logging:
+
+```go
+// In cmd/mycli/main.go or internal/cli/output.go
+func printResult(result string) {
+    fmt.Println(result)  // OK - user output in CLI code
 }
 ```
 

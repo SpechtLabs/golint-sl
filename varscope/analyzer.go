@@ -7,6 +7,7 @@ package varscope
 import (
 	"go/ast"
 	"go/token"
+	"strings"
 
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/analysis/passes/inspect"
@@ -79,8 +80,36 @@ type varDecl struct {
 	assigns  int   // number of assignments (including initial)
 }
 
+// isTestFunction checks if this is a test function
+func isTestFunction(fn *ast.FuncDecl) bool {
+	if fn.Name == nil {
+		return false
+	}
+	name := fn.Name.Name
+	return strings.HasPrefix(name, "Test") ||
+		strings.HasPrefix(name, "Benchmark") ||
+		strings.HasPrefix(name, "Fuzz") ||
+		strings.HasPrefix(name, "Example")
+}
+
+// isTableDrivenTestVar checks if a variable name is commonly used in table-driven tests
+func isTableDrivenTestVar(name string) bool {
+	common := map[string]bool{
+		"tests":     true,
+		"testCases": true,
+		"testcases": true,
+		"cases":     true,
+		"tt":        true,
+		"tc":        true,
+		"tcs":       true,
+		"scenarios": true,
+	}
+	return common[name]
+}
+
 func checkFunction(reporter *nolint.Reporter, pass *analysis.Pass, fn *ast.FuncDecl) {
 	vars := make(map[string]*varDecl)
+	isTest := isTestFunction(fn)
 
 	// First pass: collect declarations
 	ast.Inspect(fn.Body, func(n ast.Node) bool {
@@ -145,6 +174,11 @@ func checkFunction(reporter *nolint.Reporter, pass *analysis.Pass, fn *ast.FuncD
 	for _, v := range vars {
 		// Skip common short-lived variables
 		if isCommonLoopVar(v.name) {
+			continue
+		}
+
+		// Skip table-driven test variables in test functions
+		if isTest && isTableDrivenTestVar(v.name) {
 			continue
 		}
 
