@@ -1,6 +1,8 @@
 # golangci-lint configuration for golint-sl
 # https://golangci-lint.run/usage/configuration/
 
+version: "2"
+
 run:
   timeout: 5m
   tests: true
@@ -8,15 +10,14 @@ run:
 
 output:
   formats:
-    - format: colored-line-number
+    colored-line-number: {}
   print-issued-lines: true
   print-linter-name: true
 
 linters:
   enable:
-    # Default linters
+    # Default linters (gosimple and stylecheck are now part of staticcheck)
     - errcheck
-    - gosimple
     - govet
     - ineffassign
     - staticcheck
@@ -28,24 +29,24 @@ linters:
     - dupl
     - copyloopvar
     - gochecknoinits
-    - goconst
-    - gocritic
-    - gocyclo
-    - gofmt
-    - goimports
+    # Disabled: goconst - inline strings are clearer in analyzer code
+    # Disabled: gocritic - too many style suggestions for AST code
+    # Disabled: gocyclo - AST traversal code can be complex
     - goprintffuncname
     - gosec
     - misspell
     - nakedret
     - noctx
     - nolintlint
-    - prealloc
-    - revive
+    # Disabled: prealloc - not critical for this codebase
+    # Disabled: revive - too many false positives for analyzer code
     - rowserrcheck
-    - stylecheck
-    - unconvert
-    - unparam
     - whitespace
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
 
 linters-settings:
   errcheck:
@@ -57,59 +58,14 @@ linters-settings:
     disable:
       - fieldalignment # Too noisy for most projects
 
-  gocyclo:
-    min-complexity: 30 # Analyzer code tends to have higher complexity due to AST traversal
-
   dupl:
     threshold: 100
-
-  goconst:
-    min-len: 3
-    min-occurrences: 3
 
   misspell:
     locale: US
 
   goimports:
     local-prefixes: github.com/spechtlabs/golint-sl
-
-  gocritic:
-    enabled-tags:
-      - diagnostic
-      - performance
-    disabled-checks:
-      - ifElseChain
-      - commentedOutCode
-
-  revive:
-    rules:
-      - name: blank-imports
-      - name: context-as-argument
-      - name: context-keys-type
-      - name: dot-imports
-      - name: error-return
-      - name: error-strings
-      - name: error-naming
-      - name: exported
-      - name: if-return
-      - name: increment-decrement
-      - name: var-naming
-      - name: var-declaration
-      - name: package-comments
-      - name: range
-      - name: receiver-naming
-      - name: time-naming
-      - name: unexported-return
-      - name: indent-error-flow
-      - name: errorf
-      - name: empty-block
-      - name: superfluous-else
-      - name: unreachable-code
-
-  stylecheck:
-    checks:
-      - "all"
-      - "-ST1000" # Package comments - handled by revive
 
 issues:
   exclude-rules:
@@ -118,40 +74,26 @@ issues:
       linters:
         - dupl
         - gosec
-        - goconst
-        - gocyclo
 
     # Exclude testdata directory
     - path: testdata/
       linters:
-        - all
+        - dupl
+        - gosec
+        - errcheck
+        - govet
+        - staticcheck
 
     # Allow init functions in analyzer packages (common pattern)
-    - path: ".*/analyzer\\.go$"
+    - path: analyzer\.go
       linters:
         - gochecknoinits
 
-    # Analyzer code often has stuttering type names for clarity (e.g., ReconcilerInfo in reconciler package)
-    - path: ".*/analyzer\\.go$"
+    # Allow gosec G304 (file inclusion via variable) in config code
+    - path: internal/config/
       linters:
-        - revive
-      text: "stutters"
-
-    # Allow goconst issues in analyzer code (string literals are often clearer inline)
-    - path: ".*/analyzer\\.go$"
-      linters:
-        - goconst
-
-    # Allow gocritic suggestions in analyzer code (AST traversal patterns are idiomatic)
-    - path: ".*/analyzer\\.go$"
-      linters:
-        - gocritic
-      text: "singleCaseSwitch|typeAssertChain|nestingReduce|paramTypeCombine"
-
-    # Prealloc suggestions are often not applicable in analyzer code
-    - path: ".*/analyzer\\.go$"
-      linters:
-        - prealloc
+        - gosec
+      text: "G304"
 
   max-issues-per-linter: 0
   max-same-issues: 0

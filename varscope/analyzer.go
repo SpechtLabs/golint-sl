@@ -149,7 +149,8 @@ func checkFunction(reporter *nolint.Reporter, pass *analysis.Pass, fn *ast.FuncD
 	ast.Inspect(fn.Body, func(n ast.Node) bool {
 		switch node := n.(type) {
 		case *ast.AssignStmt:
-			if node.Tok == token.DEFINE { // :=
+			switch node.Tok {
+			case token.DEFINE: // :=
 				for _, lhs := range node.Lhs {
 					if ident, ok := lhs.(*ast.Ident); ok {
 						line := pass.Fset.Position(ident.Pos()).Line
@@ -161,7 +162,7 @@ func checkFunction(reporter *nolint.Reporter, pass *analysis.Pass, fn *ast.FuncD
 						}
 					}
 				}
-			} else if node.Tok == token.ASSIGN { // =
+			case token.ASSIGN: // =
 				for _, lhs := range node.Lhs {
 					if ident, ok := lhs.(*ast.Ident); ok {
 						if v, exists := vars[ident.Name]; exists {

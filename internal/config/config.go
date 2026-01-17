@@ -39,7 +39,7 @@ func Load() (*Config, error) {
 
 // LoadFrom loads configuration from the specified path.
 func LoadFrom(path string) (*Config, error) {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) //nolint:gosec // G304: path comes from findConfigFile which validates it's within the project tree
 	if err != nil {
 		return nil, err
 	}
