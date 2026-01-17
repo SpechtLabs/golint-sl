@@ -39,10 +39,12 @@ jobs:
           cache: true
           cache-dependency-path: "**/*.sum"
 
+      - name: Install golangci-lint v2
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(go env GOPATH)/bin v2.6.2
+
       - name: GolangCI Lint
-        uses: golangci/golangci-lint-action@v6
-        with:
-          version: v2.6.2
+        run: golangci-lint run ./...
 
       - name: Run format-check
         run: |
