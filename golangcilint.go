@@ -17,6 +17,7 @@ import (
 	"github.com/spechtlabs/golint-sl/analyzers"
 )
 
+//nolint:gochecknoinits // Required for golangci-lint module plugin registration
 func init() {
 	register.Plugin("golint-sl", New)
 }
