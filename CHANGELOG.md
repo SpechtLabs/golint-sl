@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.8](https://github.com/SpechtLabs/golint-sl/compare/v0.1.7...v0.1.8) (2026-01-24)
+
+
+### Features
+
+* **plugin:** add golangci-lint v2 module plugin support ([3923c93](https://github.com/SpechtLabs/golint-sl/commit/3923c93a9c4c0500415256f645f2fb1164096ae3))
+* **plugin:** add golangci-lint v2 module plugin support ([ec7672c](https://github.com/SpechtLabs/golint-sl/commit/ec7672c74ceb0166a6b97927357ee1f9923dbd0e))
+
 ## [0.1.7](https://github.com/SpechtLabs/golint-sl/compare/v0.1.6...v0.1.7) (2026-01-17)
 
 
