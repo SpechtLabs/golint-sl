@@ -69,7 +69,7 @@ If `default` is not specified, all analyzers are enabled.
 
 ## Analyzer Names
 
-All 32 analyzers and their names:
+All 31 analyzers and their names:
 
 ### Error Handling
 
@@ -125,7 +125,6 @@ All 32 analyzers and their names:
 
 | Name | Description |
 |------|-------------|
-| `varscope` | Variable scope |
 | `closurecomplexity` | Closure complexity |
 | `emptyinterface` | Empty interface usage |
 | `returninterface` | Return type patterns |
@@ -250,7 +249,6 @@ analyzers:
   nopanic: true
   nestingdepth: true
   syncaccess: true
-  varscope: true
   closurecomplexity: true
   emptyinterface: true
   returninterface: true

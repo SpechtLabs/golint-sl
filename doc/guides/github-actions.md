@@ -6,6 +6,74 @@ createTime: 2025/01/16 10:00:00
 
 Run golint-sl on every pull request to catch issues before they're merged.
 
+## Using golangci-lint Plugin (Recommended)
+
+The recommended approach is to use golint-sl as a golangci-lint module plugin:
+
+```yaml
+name: Lint
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache: true
+
+      - name: Install golangci-lint
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(go env GOPATH)/bin v2.8.0
+
+      - name: Build custom golangci-lint with golint-sl
+        run: golangci-lint custom
+
+      - name: Run linter
+        run: ./custom-gcl run ./...
+```
+
+This requires two config files in your repository:
+
+**`.custom-gcl.yml`**:
+
+```yaml
+version: v2.8.0
+
+plugins:
+  - module: 'github.com/spechtlabs/golint-sl'
+    version: v0.1.0
+```
+
+**`.golangci.yml`**:
+
+```yaml
+version: "2"
+
+linters:
+  enable:
+    - golint-sl
+
+  settings:
+    custom:
+      golint-sl:
+        type: module
+        description: SpechtLabs Go linter collection
+        original-url: github.com/spechtlabs/golint-sl
+```
+
+## Standalone Workflow
+
+Alternatively, run golint-sl as a standalone tool:
+
 ## Basic Workflow
 
 Create `.github/workflows/lint.yaml`:

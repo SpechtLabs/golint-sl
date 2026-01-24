@@ -122,4 +122,3 @@ analyzers:
 ## Related Analyzers
 
 - [functionsize](/reference/analyzers/functionsize) - Function complexity
-- [varscope](/reference/analyzers/varscope) - Variable scope

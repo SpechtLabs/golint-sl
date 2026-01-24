@@ -33,7 +33,6 @@ analyzers:
           - 'statusupdate/**'
           - 'syncaccess/**'
           - 'todotracker/**'
-          - 'varscope/**'
           - 'wideevents/**'
 
 # CLI-related files

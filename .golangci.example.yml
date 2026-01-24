@@ -1,0 +1,51 @@
+# Example golangci-lint configuration for using golint-sl as a module plugin
+#
+# This file demonstrates how to configure golangci-lint to use golint-sl
+# after building a custom binary with `golangci-lint custom`.
+#
+# Usage:
+#   1. Copy this file to your project as .golangci.yml
+#   2. Adjust settings as needed
+#   3. Run: ./custom-gcl run ./...
+
+version: "2"
+
+linters:
+  enable:
+    - golint-sl
+
+  settings:
+    custom:
+      golint-sl:
+        type: module
+        description: SpechtLabs Go linter collection for production-ready code
+        original-url: github.com/spechtlabs/golint-sl
+        settings:
+          # Optional: disable specific analyzers by name
+          # Uncomment the analyzers you want to disable
+          # disabled-analyzers:
+          #   # Kubernetes-specific (disable if not a K8s project)
+          #   - reconciler
+          #   - statusupdate
+          #   - sideeffects
+          #
+          #   # May be noisy during development
+          #   - todotracker
+          #   - exporteddoc
+          #
+          #   # Strict checks (disable if too aggressive)
+          #   - nilcheck
+          #   - nopanic
+
+# Example: Combine with other golangci-lint linters
+# linters:
+#   enable:
+#     - golint-sl
+#     - errcheck
+#     - govet
+#     - staticcheck
+#   disable:
+#     # Disable golangci-lint linters that overlap with golint-sl
+#     - nilerr       # Use golint-sl's nilcheck instead
+#     - bodyclose    # Use golint-sl's resourceclose instead
+#     - contextcheck # Use golint-sl's contextpropagation instead

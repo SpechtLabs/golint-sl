@@ -64,7 +64,6 @@ func run(pass *analysis.Pass) (interface{}, error) {
 	nodeFilter := []ast.Node{
 		(*ast.TypeSpec)(nil),
 		(*ast.FuncDecl)(nil),
-		(*ast.File)(nil),
 	}
 
 	// First pass: collect all interfaces and structs
@@ -82,24 +81,21 @@ func run(pass *analysis.Pass) (interface{}, error) {
 		}
 	})
 
-	// Track current file's test status
-	var currentFileIsTest bool
-
 	// Second pass: analyze usage
 	inspect.Preorder(nodeFilter, func(n ast.Node) {
 		switch node := n.(type) {
-		case *ast.File:
-			filename := pass.Fset.Position(node.Pos()).Filename
-			currentFileIsTest = strings.HasSuffix(filename, "_test.go")
-
 		case *ast.TypeSpec:
 			if st, ok := node.Type.(*ast.StructType); ok {
 				checkStructFieldsUseInterfaces(reporter, pass, node, st)
 			}
 
 		case *ast.FuncDecl:
+			// Check if this function is in a test file
+			filename := pass.Fset.Position(node.Pos()).Filename
+			isTestFile := strings.HasSuffix(filename, "_test.go")
+
 			checkConstructorReturnsInterface(reporter, node, interfaces)
-			checkDependencyInjection(reporter, node, currentFileIsTest)
+			checkDependencyInjection(reporter, node, isTestFile)
 		}
 	})
 

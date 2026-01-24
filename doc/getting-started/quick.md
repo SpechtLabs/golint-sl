@@ -6,6 +6,10 @@ createTime: 2025/01/16 10:00:00
 
 Get golint-sl running on your project in under 5 minutes.
 
+::: tip Prefer golangci-lint?
+If you already use golangci-lint, consider using golint-sl as a [module plugin](/guides/golangci-lint) for unified configuration and `nolint` directive support.
+:::
+
 ## Step 1: Install
 
 ```bash
@@ -138,6 +142,7 @@ golint-sl ./... || exit 1
 
 Now that you have golint-sl running:
 
+- [golangci-lint Integration](/guides/golangci-lint) - Use as a golangci-lint plugin (recommended)
 - [Configure Analyzers](/guides/configure-analyzers) - Customize which analyzers run
 - [GitHub Actions](/guides/github-actions) - Add to your CI pipeline
 - [Pre-commit Hooks](/guides/pre-commit) - Catch issues before committing

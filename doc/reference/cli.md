@@ -114,7 +114,6 @@ golint-sl -nilcheck -todotracker=false ./...
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `-varscope` | enabled | Variable scope analysis |
 | `-closurecomplexity` | enabled | Closure complexity limits |
 | `-emptyinterface` | enabled | Flag interface{}/any usage |
 | `-returninterface` | enabled | Return structs, not interfaces |

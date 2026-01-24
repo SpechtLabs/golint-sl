@@ -4,7 +4,7 @@ permalink: /understanding/categories
 createTime: 2025/01/16 10:00:00
 ---
 
-golint-sl's 32 analyzers are organized into 8 categories based on the problems they solve.
+golint-sl's 31 analyzers are organized into 8 categories based on the problems they solve.
 
 ## Error Handling
 
@@ -174,39 +174,13 @@ Keep code readable and maintainable.
 
 | Analyzer | Purpose |
 |----------|---------|
-| `varscope` | Variables should be declared close to usage |
 | `closurecomplexity` | Closures should be simple; extract complex logic |
 | `emptyinterface` | Flag problematic `interface{}`/`any` usage |
 | `returninterface` | Enforce "accept interfaces, return structs" |
 
 ### Why It Matters
 
-Clean code is debuggable code:
-
-```go
-// Hard to follow: variable declared far from use
-func Process(items []Item) {
-    var total int  // Where is this used?
-
-    // ... 50 lines of code ...
-
-    for _, item := range items {
-        total += item.Value
-    }
-    return total
-}
-
-// Clear: variable next to usage
-func Process(items []Item) {
-    // ... 50 lines of code ...
-
-    var total int
-    for _, item := range items {
-        total += item.Value
-    }
-    return total
-}
-```
+Clean code is debuggable code. Keep closures simple, avoid `interface{}`/`any` when possible, and return concrete types from functions.
 
 ## Architecture
 

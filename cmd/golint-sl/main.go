@@ -24,7 +24,7 @@
 //	  # nilcheck: true
 //	  # contextfirst: true
 //
-// Available analyzers (32 total):
+// Available analyzers (31 total):
 //
 // Error handling:
 //   - humaneerror: Enforce humane-errors-go with actionable advice
@@ -59,7 +59,6 @@
 //   - syncaccess: Detect potential data races and synchronization issues
 //
 // Clean code:
-//   - varscope: Detect variables declared too far from usage
 //   - closurecomplexity: Detect complex anonymous functions
 //   - emptyinterface: Flag problematic interface{}/any usage
 //   - returninterface: Enforce "accept interfaces, return structs"
@@ -90,7 +89,7 @@ func main() {
 	// Handle version flag
 	if len(os.Args) > 1 && (os.Args[1] == "-version" || os.Args[1] == "--version" || os.Args[1] == "version") {
 		fmt.Println(version.Info())
-		fmt.Println("GoLint SpechtLabs - 32 analyzers for Go best practices")
+		fmt.Println("GoLint SpechtLabs - 31 analyzers for Go best practices")
 		fmt.Println("https://github.com/SpechtLabs/golint-sl")
 		os.Exit(0)
 	}

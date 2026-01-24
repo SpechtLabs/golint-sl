@@ -37,7 +37,6 @@ import (
 	"github.com/spechtlabs/golint-sl/statusupdate"
 	"github.com/spechtlabs/golint-sl/syncaccess"
 	"github.com/spechtlabs/golint-sl/todotracker"
-	"github.com/spechtlabs/golint-sl/varscope"
 	"github.com/spechtlabs/golint-sl/wideevents"
 )
 
@@ -78,7 +77,6 @@ func All() []*analysis.Analyzer {
 		syncaccess.Analyzer,
 
 		// Clean Code
-		varscope.Analyzer,
 		closurecomplexity.Analyzer,
 		emptyinterface.Analyzer,
 		returninterface.Analyzer,
@@ -154,7 +152,6 @@ func Safety() []*analysis.Analyzer {
 // CleanCode returns analyzers focused on clean code patterns.
 func CleanCode() []*analysis.Analyzer {
 	return []*analysis.Analyzer{
-		varscope.Analyzer,
 		closurecomplexity.Analyzer,
 		emptyinterface.Analyzer,
 		returninterface.Analyzer,

@@ -9,7 +9,7 @@ export default defineUserConfig({
 	lang: "en-US",
 	title: "golint-sl",
 	description:
-		"SpechtLabs best practices for writing production-ready Go code - 32 analyzers for code quality, safety, and observability",
+		"SpechtLabs best practices for writing production-ready Go code - 31 analyzers for code quality, safety, and observability",
 
 	head: [
 		[
@@ -17,7 +17,7 @@ export default defineUserConfig({
 			{
 				name: "description",
 				content:
-					"A comprehensive Go linter with 32 analyzers enforcing code quality, safety, architecture, and observability patterns learned from production systems.",
+					"A comprehensive Go linter with 31 analyzers enforcing code quality, safety, architecture, and observability patterns learned from production systems.",
 			},
 		],
 		["link", { rel: "icon", type: "image/png", href: "/images/specht.png" }],
@@ -233,7 +233,6 @@ export default defineUserConfig({
 							icon: "mdi:broom",
 							collapsed: false,
 							items: [
-								{ text: "varscope", link: "varscope" },
 								{ text: "closurecomplexity", link: "closurecomplexity" },
 								{ text: "emptyinterface", link: "emptyinterface" },
 								{ text: "returninterface", link: "returninterface" },

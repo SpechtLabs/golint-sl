@@ -141,6 +141,8 @@ var requiredContextFields = []string{
 	"request_id",
 	"trace_id",
 	"span_id",
+	"dd.trace_id",
+	"dd.span_id",
 	"user_id",
 	"service",
 }

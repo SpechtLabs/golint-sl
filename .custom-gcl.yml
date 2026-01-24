@@ -1,0 +1,24 @@
+# golangci-lint v2 custom binary configuration
+#
+# This file configures the golangci-lint custom binary builder to include
+# golint-sl as a module plugin.
+#
+# Usage:
+#   1. Run: golangci-lint custom
+#   2. This creates a ./custom-gcl binary with golint-sl baked in
+#   3. Use ./custom-gcl instead of golangci-lint
+#
+# For local development, the 'path' directive points to the current directory.
+# When using the published module, remove 'path' and use the version tag.
+
+version: v2.8.0
+
+plugins:
+  # For local development
+  - module: 'github.com/spechtlabs/golint-sl'
+    import: 'github.com/spechtlabs/golint-sl'
+    path: .
+
+  # For using the published module (uncomment and remove the above):
+  # - module: 'github.com/spechtlabs/golint-sl'
+  #   version: v0.1.0

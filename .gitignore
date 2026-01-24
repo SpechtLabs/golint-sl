@@ -49,3 +49,4 @@ debug
 
 # golangci-lint cache
 .golangci-lint/
+custom-gcl

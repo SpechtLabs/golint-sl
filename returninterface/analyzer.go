@@ -55,7 +55,8 @@ var Analyzer = &analysis.Analyzer{
 // Standard library interfaces that are acceptable to return
 var acceptableReturnInterfaces = map[string]bool{
 	// Error handling
-	"error": true,
+	"error":        true,
+	"humane.Error": true, // humane-errors-go error type
 
 	// IO interfaces
 	"io.Reader":     true,

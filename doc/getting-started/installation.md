@@ -6,7 +6,54 @@ createTime: 2025/01/16 10:00:00
 
 golint-sl can be installed through several methods. Choose the one that fits your workflow.
 
-## Go Install (Recommended)
+## golangci-lint Plugin (Recommended)
+
+The recommended way to use golint-sl is as a [golangci-lint](https://golangci-lint.run/) module plugin. This provides unified configuration, `nolint` directives, and seamless integration with your existing linting setup.
+
+### Quick Setup
+
+1. **Create `.custom-gcl.yml`** in your project:
+
+```yaml
+version: v2.8.0
+
+plugins:
+  - module: 'github.com/spechtlabs/golint-sl'
+    version: v0.1.0  # Use latest version
+```
+
+1. **Build custom binary**:
+
+```bash
+golangci-lint custom
+```
+
+1. **Create `.golangci.yml`** to enable the plugin:
+
+```yaml
+version: "2"
+
+linters:
+  enable:
+    - golint-sl
+
+  settings:
+    custom:
+      golint-sl:
+        type: module
+        description: SpechtLabs Go linter collection
+        original-url: github.com/spechtlabs/golint-sl
+```
+
+1. **Run the linter**:
+
+```bash
+./custom-gcl run ./...
+```
+
+See [golangci-lint Integration](/guides/golangci-lint) for detailed configuration options.
+
+## Go Install (Standalone)
 
 If you have Go installed, this is the simplest method:
 

@@ -69,6 +69,21 @@ func run(pass *analysis.Pass) (interface{}, error) {
 	reporter := nolint.NewReporter(pass)
 	inspect := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
 
+	// Build a set of test files to skip
+	testFiles := make(map[string]bool)
+	for _, f := range pass.Files {
+		filename := pass.Fset.Position(f.Pos()).Filename
+		if strings.HasSuffix(filename, "_test.go") {
+			testFiles[filename] = true
+		}
+	}
+
+	// Helper to check if a node is in a test file
+	isTestFile := func(n ast.Node) bool {
+		filename := pass.Fset.Position(n.Pos()).Filename
+		return testFiles[filename]
+	}
+
 	nodeFilter := []ast.Node{
 		(*ast.ValueSpec)(nil),
 		(*ast.AssignStmt)(nil),
@@ -76,6 +91,11 @@ func run(pass *analysis.Pass) (interface{}, error) {
 	}
 
 	inspect.Preorder(nodeFilter, func(n ast.Node) {
+		// Skip test files - mock credentials are standard practice in tests
+		if isTestFile(n) {
+			return
+		}
+
 		switch node := n.(type) {
 		case *ast.ValueSpec:
 			checkValueSpec(reporter, node)

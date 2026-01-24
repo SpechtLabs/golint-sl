@@ -2,7 +2,7 @@
 
 **SpechtLabs best practices for writing good Go code.**
 
-A comprehensive Go linter with **32 analyzers** enforcing code quality, safety, architecture, and observability patterns learned from production systems.
+A comprehensive Go linter with **31 analyzers** enforcing code quality, safety, architecture, and observability patterns learned from production systems.
 
 ## Installation
 
@@ -43,7 +43,7 @@ golint-sl -wideevents -contextpropagation -nilcheck ./...
 golint-sl -help
 ```
 
-## Analyzers (32)
+## Analyzers (31)
 
 ### Error Handling
 
@@ -99,7 +99,6 @@ golint-sl -help
 
 | Analyzer            | Description                                 |
 | ------------------- | ------------------------------------------- |
-| `varscope`          | Variables declared close to usage           |
 | `closurecomplexity` | Keep closures simple, extract complex logic |
 | `emptyinterface`    | Flag problematic `interface{}`/`any` usage  |
 | `returninterface`   | "Accept interfaces, return structs"         |

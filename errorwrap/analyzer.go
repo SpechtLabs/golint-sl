@@ -207,8 +207,8 @@ func checkBareErrorReturn(reporter *nolint.Reporter, ret *ast.ReturnStmt, fn *as
 		// Only report if the function has meaningful operations (not just wrapping another call)
 		if hasMultipleOperations(fn) {
 			reporter.Reportf(ret.Pos(),
-				"returning error %q without wrapping; add context with humane.Wrap(%s, message, advice...) or fmt.Errorf(\"operation: %%w\", %s)",
-				ident.Name, ident.Name, ident.Name)
+				"returning error %q without wrapping; add context with humane.Wrap(%s, message, advice...)",
+				ident.Name, ident.Name)
 		}
 	}
 }
