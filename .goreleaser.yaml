@@ -47,7 +47,7 @@ archives:
       {{- .Arch }}
 
 checksum:
-  name_template: 'checksums.txt'
+  name_template: "checksums.txt"
 
 snapshot:
   version_template: "{{ incpatch .Version }}-next"
@@ -56,9 +56,9 @@ changelog:
   sort: asc
   filters:
     exclude:
-      - '^docs:'
-      - '^test:'
-      - '^chore:'
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
 
 # Docker images (multi-platform)
 dockers:
@@ -144,20 +144,3 @@ signs:
       - "--output-signature=${signature}"
       - "${artifact}"
     artifacts: binary
-
-# Homebrew formula
-brews:
-  - name: golint-sl
-    ids:
-      - tar
-    repository:
-      owner: spechtlabs
-      name: homebrew-tap
-      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
-    homepage: https://github.com/SpechtLabs/golint-sl
-    description: "GoLint SpechtLabs - 32 analyzers for Go best practices"
-    license: "Apache-2.0"
-    install: |
-      bin.install "golint-sl"
-    test: |
-      system "#{bin}/golint-sl", "-help"
