@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.10](https://github.com/SpechtLabs/golint-sl/compare/v0.1.9...v0.1.10) (2026-03-23)
+
+
+### Bug Fixes
+
+* reduce false positives in interfaceconsistency and optionspattern analyzers ([#15](https://github.com/SpechtLabs/golint-sl/issues/15)) ([10d0ca8](https://github.com/SpechtLabs/golint-sl/commit/10d0ca81cd180a8928c19ddf0ca058378a9cf35e))
+
 ## [0.1.9](https://github.com/SpechtLabs/golint-sl/compare/v0.1.8...v0.1.9) (2026-01-26)
 
 
