@@ -203,10 +203,10 @@ linters:
 ```makefile
 .PHONY: lint
 lint: custom-gcl
-	./custom-gcl run ./...
+    ./custom-gcl run ./...
 
 custom-gcl:
-	golangci-lint custom
+    golangci-lint custom
 ```
 
 ## Pre-commit with golangci-lint Plugin
