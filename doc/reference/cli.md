@@ -1,282 +1,196 @@
 ---
-title: CLI Reference
+title: Plugin Settings Reference
 permalink: /reference/cli
 createTime: 2025/01/16 10:00:00
 ---
 
-Complete reference for the `golint-sl` command-line interface.
+Complete reference for the golint-sl plugin settings and available analyzers.
 
-## Synopsis
+## Plugin Configuration
 
-```bash
-golint-sl [flags] [packages]
+golint-sl is configured through `.golangci.yml` as a golangci-lint module plugin:
+
+```yaml
+version: "2"
+
+linters:
+  enable:
+    - golint-sl
+
+  settings:
+    custom:
+      golint-sl:
+        type: module
+        description: SpechtLabs Go linter collection
+        original-url: github.com/spechtlabs/golint-sl
+        settings:
+          disabled-analyzers: []
 ```
 
-## Description
+## Plugin Settings
 
-golint-sl analyzes Go packages for code quality, safety, and best practice violations. It uses the standard Go analysis framework and supports all common patterns.
+### disabled-analyzers
 
-## Packages
+A list of analyzer names to disable. All analyzers are enabled by default.
 
-Specify packages using Go's package path syntax:
-
-```bash
-# Current package
-golint-sl .
-
-# Current package and all subpackages
-golint-sl ./...
-
-# Specific packages
-golint-sl ./cmd/... ./internal/...
-
-# By import path
-golint-sl github.com/myorg/myproject/...
+```yaml
+settings:
+  custom:
+    golint-sl:
+      type: module
+      settings:
+        disabled-analyzers:
+          - todotracker
+          - reconciler
 ```
 
-## Flags
-
-### General Flags
-
-| Flag | Description |
-|------|-------------|
-| `-help` | Show help message with all available flags |
-| `-version` | Show version information |
-
-### Analyzer Flags
-
-Each analyzer can be enabled or disabled via flag:
+## Running
 
 ```bash
-# Enable specific analyzers (all others remain at default)
-golint-sl -nilcheck -resourceclose ./...
+# Run all enabled linters including golint-sl
+./custom-gcl run ./...
 
-# Disable specific analyzers
-golint-sl -nilcheck=false -todotracker=false ./...
+# Run on specific packages
+./custom-gcl run ./cmd/... ./internal/...
 
-# Combine enable and disable
-golint-sl -nilcheck -todotracker=false ./...
+# Verbose output (shows which linters ran)
+./custom-gcl run -v ./...
+
+# List all linters including golint-sl
+./custom-gcl linters
 ```
 
-### Available Analyzer Flags
+## Available Analyzers
 
-#### Error Handling
+All 32 analyzers and their names for use in `disabled-analyzers` and `//nolint` directives.
 
-| Flag | Default | Description |
+### Error Handling
+
+| Name | Default | Description |
 |------|---------|-------------|
-| `-humaneerror` | enabled | Enforce humane-errors-go usage |
-| `-errorwrap` | enabled | Detect bare error returns |
-| `-sentinelerrors` | enabled | Prefer sentinel errors |
+| `humaneerror` | enabled | Enforce humane-errors-go usage |
+| `errorwrap` | enabled | Detect bare error returns |
+| `sentinelerrors` | enabled | Prefer sentinel errors |
 
-#### Observability
+### Observability
 
-| Flag | Default | Description |
+| Name | Default | Description |
 |------|---------|-------------|
-| `-wideevents` | enabled | Enforce wide event logging |
-| `-contextlogger` | enabled | Enforce context-based logging |
-| `-contextpropagation` | enabled | Ensure context propagation |
+| `wideevents` | enabled | Enforce wide event logging |
+| `contextlogger` | enabled | Enforce context-based logging |
+| `contextpropagation` | enabled | Ensure context propagation |
 
-#### Kubernetes
+### Kubernetes
 
-| Flag | Default | Description |
+| Name | Default | Description |
 |------|---------|-------------|
-| `-reconciler` | enabled | Kubernetes reconciler patterns |
-| `-statusupdate` | enabled | Ensure status updates |
-| `-sideeffects` | enabled | Detect reconciler side effects |
+| `reconciler` | enabled | Kubernetes reconciler patterns |
+| `statusupdate` | enabled | Ensure status updates |
+| `sideeffects` | enabled | Detect reconciler side effects |
 
-#### Testability
+### Testability
 
-| Flag | Default | Description |
+| Name | Default | Description |
 |------|---------|-------------|
-| `-clockinterface` | enabled | Enforce Clock interface |
-| `-interfaceconsistency` | enabled | Interface implementation checks |
-| `-mockverify` | enabled | Mock interface verification |
-| `-optionspattern` | enabled | Functional options pattern |
+| `clockinterface` | enabled | Enforce Clock interface |
+| `interfaceconsistency` | enabled | Interface implementation checks |
+| `mockverify` | enabled | Mock interface verification |
+| `optionspattern` | enabled | Functional options pattern |
 
-#### Resources
+### Resources
 
-| Flag | Default | Description |
+| Name | Default | Description |
 |------|---------|-------------|
-| `-resourceclose` | enabled | Detect unclosed resources |
-| `-httpclient` | enabled | HTTP client best practices |
+| `resourceclose` | enabled | Detect unclosed resources |
+| `httpclient` | enabled | HTTP client best practices |
 
-#### Safety
+### Safety
 
-| Flag | Default | Description |
+| Name | Default | Description |
 |------|---------|-------------|
-| `-goroutineleak` | enabled | Detect goroutine leaks |
-| `-nilcheck` | enabled | Enforce nil checks |
-| `-nopanic` | enabled | Library panic detection |
-| `-nestingdepth` | enabled | Enforce shallow nesting |
-| `-syncaccess` | enabled | Detect data races |
+| `goroutineleak` | enabled | Detect goroutine leaks |
+| `nilcheck` | enabled | Enforce nil checks |
+| `nopanic` | enabled | Library panic detection |
+| `nestingdepth` | enabled | Enforce shallow nesting |
+| `syncaccess` | enabled | Detect data races |
 
-#### Clean Code
+### Clean Code
 
-| Flag | Default | Description |
+| Name | Default | Description |
 |------|---------|-------------|
-| `-closurecomplexity` | enabled | Closure complexity limits |
-| `-emptyinterface` | enabled | Flag interface{}/any usage |
-| `-returninterface` | enabled | Return structs, not interfaces |
+| `closurecomplexity` | enabled | Closure complexity limits |
+| `emptyinterface` | enabled | Flag interface{}/any usage |
+| `returninterface` | enabled | Return structs, not interfaces |
 
-#### Architecture
+### Architecture
 
-| Flag | Default | Description |
+| Name | Default | Description |
 |------|---------|-------------|
-| `-contextfirst` | enabled | Context as first parameter |
-| `-pkgnaming` | enabled | Package naming conventions |
-| `-functionsize` | enabled | Function length limits |
-| `-exporteddoc` | enabled | Exported symbol documentation |
-| `-todotracker` | enabled | TODO ownership |
-| `-hardcodedcreds` | enabled | Detect hardcoded secrets |
-| `-lifecycle` | enabled | Component lifecycle patterns |
-| `-dataflow` | enabled | SSA-based data flow analysis |
+| `contextfirst` | enabled | Context as first parameter |
+| `pkgnaming` | enabled | Package naming conventions |
+| `functionsize` | enabled | Function length limits |
+| `exporteddoc` | enabled | Exported symbol documentation |
+| `todotracker` | enabled | TODO ownership |
+| `hardcodedcreds` | enabled | Detect hardcoded secrets |
+| `lifecycle` | enabled | Component lifecycle patterns |
+| `dataflow` | enabled | SSA-based data flow analysis |
 
-## Configuration File
+## nolint Directives
 
-golint-sl reads `.golint-sl.yaml` from the current directory or any parent directory.
+When using golint-sl as a golangci-lint plugin, suppress warnings with standard `//nolint` directives using the analyzer names from the tables above:
 
-See [Configuration Reference](/reference/configuration) for file format.
+```go
+// Suppress all golint-sl analyzers
+result := legacyFunc() //nolint:golint-sl
 
-Command-line flags override configuration file settings.
+// Suppress specific analyzer
+err := doSomething() //nolint:errorwrap
+
+// Suppress multiple analyzers
+data := process(x) //nolint:nilcheck,errorwrap
+```
 
 ## Output Format
 
-golint-sl produces output compatible with Go tools:
+golint-sl produces output through golangci-lint's standard format:
 
 ```text
-file.go:line:column: message
+file.go:line:column: message (golint-sl)
 ```
 
 Example:
 
 ```text
-./handlers/user.go:42:3: pointer parameter "user" used without nil check
-./services/api.go:87:2: log call without structured fields
-```
-
-### Output to File
-
-Redirect output to a file:
-
-```bash
-golint-sl ./... > lint-results.txt 2>&1
-```
-
-### JSON Output
-
-golint-sl uses the standard Go analysis framework, which doesn't natively support JSON output. For JSON output, consider:
-
-```bash
-golint-sl ./... 2>&1 | your-json-converter
+./handlers/user.go:42:3: pointer parameter "user" used without nil check (golint-sl)
+./services/api.go:87:2: log call without structured fields (golint-sl)
 ```
 
 ## Exit Codes
+
+Exit codes follow golangci-lint's behavior:
 
 | Code | Meaning |
 |------|---------|
 | 0 | No issues found |
 | 1 | Issues found |
-| 2 | Error (invalid flags, package errors, etc.) |
+| 2 | Warning (build errors, etc.) |
+| 3 | Failure (config error, etc.) |
 
-## Environment Variables
+---
 
-golint-sl respects standard Go environment variables:
-
-| Variable | Description |
-|----------|-------------|
-| `GOPATH` | Go workspace path |
-| `GOROOT` | Go installation path |
-| `GO111MODULE` | Module mode (recommended: `on`) |
-| `GOPROXY` | Module proxy URL |
-
-## Examples
-
-### Basic Usage
+::: details Standalone CLI Reference
+When running as a standalone binary (`golint-sl`), each analyzer can be toggled via CLI flags:
 
 ```bash
-# Analyze all packages
-golint-sl ./...
+# Enable specific analyzers
+golint-sl -nilcheck -resourceclose ./...
 
-# Analyze specific package
-golint-sl ./cmd/myapp
-
-# Analyze multiple packages
-golint-sl ./cmd/... ./internal/core/...
+# Disable specific analyzers
+golint-sl -nilcheck=false -todotracker=false ./...
 ```
 
-### Selective Analysis
-
-```bash
-# Only safety analyzers
-golint-sl -nilcheck -goroutineleak -nopanic -nestingdepth -syncaccess ./...
-
-# Only Kubernetes analyzers
-golint-sl -reconciler -statusupdate -sideeffects ./...
-
-# Disable noisy analyzers
-golint-sl -todotracker=false -exporteddoc=false ./...
-```
-
-### CI Integration
-
-```bash
-# Fail on any issue
-golint-sl ./... || exit 1
-
-# Non-blocking (warning only)
-golint-sl ./... || true
-```
-
-### With Make
-
-```makefile
-.PHONY: lint
-lint:
- golint-sl ./...
-
-.PHONY: lint-strict
-lint-strict:
- golint-sl -todotracker -exporteddoc ./...
-```
-
-## Troubleshooting
-
-### "package not found" Errors
-
-Ensure modules are downloaded:
-
-```bash
-go mod download
-golint-sl ./...
-```
-
-### Slow Analysis
-
-For large codebases, disable expensive analyzers:
-
-```bash
-golint-sl -dataflow=false -sideeffects=false ./...
-```
-
-Or analyze specific packages:
-
-```bash
-golint-sl ./cmd/... ./internal/core/...
-```
-
-### Too Many Warnings
-
-Adopt incrementally:
-
-```yaml
-# .golint-sl.yaml
-analyzers:
-  default: false
-  nilcheck: true
-  resourceclose: true
-```
-
-Then enable more analyzers as you fix issues.
+The standalone binary reads `.golint-sl.yaml` for configuration. See [Configuration Reference](/reference/configuration) for the standalone config format.
+:::
 
 ## See Also
 

@@ -4,15 +4,22 @@ permalink: /getting-started/installation
 createTime: 2025/01/16 10:00:00
 ---
 
-golint-sl can be installed through several methods. Choose the one that fits your workflow.
+golint-sl runs as a [golangci-lint](https://golangci-lint.run/) module plugin. This gives you unified configuration, `nolint` directives, and seamless integration with your existing linting setup.
 
-## golangci-lint Plugin (Recommended)
+## Prerequisites
 
-The recommended way to use golint-sl is as a [golangci-lint](https://golangci-lint.run/) module plugin. This provides unified configuration, `nolint` directives, and seamless integration with your existing linting setup.
+- **Go** 1.21 or later
+- **golangci-lint** v2.0 or later ([install guide](https://golangci-lint.run/welcome/install/))
 
-### Quick Setup
+Verify golangci-lint is installed:
 
-1. **Create `.custom-gcl.yml`** in your project:
+```bash
+golangci-lint version
+```
+
+## Step 1: Create `.custom-gcl.yml`
+
+Add this file to your project root:
 
 ```yaml
 version: v2.8.0
@@ -22,13 +29,23 @@ plugins:
     version: v0.1.0  # Use latest version
 ```
 
-1. **Build custom binary**:
+This tells golangci-lint to build a custom binary with golint-sl included.
+
+## Step 2: Build the Custom Binary
 
 ```bash
 golangci-lint custom
 ```
 
-1. **Create `.golangci.yml`** to enable the plugin:
+This creates a `./custom-gcl` binary in your project directory.
+
+::: tip
+You only need to rebuild when you change the golangci-lint version or the golint-sl version in `.custom-gcl.yml`.
+:::
+
+## Step 3: Configure `.golangci.yml`
+
+Enable the plugin in your golangci-lint configuration:
 
 ```yaml
 version: "2"
@@ -45,171 +62,59 @@ linters:
         original-url: github.com/spechtlabs/golint-sl
 ```
 
-1. **Run the linter**:
+## Step 4: Run
 
 ```bash
 ./custom-gcl run ./...
 ```
 
-See [golangci-lint Integration](/guides/golangci-lint) for detailed configuration options.
+### Verify the Plugin
 
-## Go Install (Standalone)
-
-If you have Go installed, this is the simplest method:
+Confirm golint-sl is loaded:
 
 ```bash
-go install github.com/spechtlabs/golint-sl/cmd/golint-sl@latest
+./custom-gcl linters | grep golint-sl
 ```
-
-This installs the latest version to your `$GOPATH/bin` directory (or `$GOBIN` if set).
-
-::: tip Verify Installation
-
-```bash
-golint-sl -version
-```
-
-:::
-
-## Pre-built Binaries
-
-Download pre-built binaries from [GitHub Releases](https://github.com/SpechtLabs/golint-sl/releases).
-
-### macOS
-
-```bash
-# Apple Silicon (M1/M2/M3)
-curl -LO https://github.com/SpechtLabs/golint-sl/releases/latest/download/golint-sl_darwin_arm64.tar.gz
-tar -xzf golint-sl_darwin_arm64.tar.gz
-sudo mv golint-sl /usr/local/bin/
-
-# Intel
-curl -LO https://github.com/SpechtLabs/golint-sl/releases/latest/download/golint-sl_darwin_amd64.tar.gz
-tar -xzf golint-sl_darwin_amd64.tar.gz
-sudo mv golint-sl /usr/local/bin/
-```
-
-### Linux
-
-```bash
-# x86_64
-curl -LO https://github.com/SpechtLabs/golint-sl/releases/latest/download/golint-sl_linux_amd64.tar.gz
-tar -xzf golint-sl_linux_amd64.tar.gz
-sudo mv golint-sl /usr/local/bin/
-
-# ARM64
-curl -LO https://github.com/SpechtLabs/golint-sl/releases/latest/download/golint-sl_linux_arm64.tar.gz
-tar -xzf golint-sl_linux_arm64.tar.gz
-sudo mv golint-sl /usr/local/bin/
-```
-
-## Docker
-
-Run golint-sl without installing anything locally:
-
-```bash
-docker run --rm -v $(pwd):/app -w /app ghcr.io/spechtlabs/golint-sl:latest ./...
-```
-
-This mounts your current directory into the container and runs analysis on all packages.
-
-### Docker Compose
-
-Add to your `docker-compose.yml` for consistent CI/local development:
-
-```yaml
-services:
-  lint:
-    image: ghcr.io/spechtlabs/golint-sl:latest
-    volumes:
-      - .:/app
-    working_dir: /app
-    command: ./...
-```
-
-Run with:
-
-```bash
-docker compose run --rm lint
-```
-
-## Build from Source
-
-Clone and build the latest development version:
-
-```bash
-git clone https://github.com/SpechtLabs/golint-sl.git
-cd golint-sl
-make install
-```
-
-This builds and installs to your `$GOPATH/bin`.
-
-### Development Build
-
-For development with local changes:
-
-```bash
-make build
-./bin/golint-sl ./...
-```
-
-## Version Pinning
-
-For reproducible builds, pin to a specific version:
-
-```bash
-# Go install with version
-go install github.com/spechtlabs/golint-sl/cmd/golint-sl@v0.1.0
-
-# Or use a specific Docker tag
-docker run --rm -v $(pwd):/app -w /app ghcr.io/spechtlabs/golint-sl:v0.1.0 ./...
-```
-
-## Requirements
-
-- **Go**: 1.21 or later (for `go install`)
-- **Docker**: 20.10 or later (for Docker usage)
 
 ## Troubleshooting
 
-### Command Not Found
+### golangci-lint Not Found
 
-If `golint-sl` isn't found after `go install`:
-
-1. Ensure `$GOPATH/bin` is in your `PATH`:
-
-   ```bash
-   export PATH=$PATH:$(go env GOPATH)/bin
-   ```
-
-2. Add to your shell profile (`~/.bashrc`, `~/.zshrc`, etc.)
-
-### Permission Denied (Linux)
-
-If you get permission errors when moving to `/usr/local/bin`:
+Ensure golangci-lint is installed and in your `PATH`:
 
 ```bash
-# Use sudo
-sudo mv golint-sl /usr/local/bin/
-
-# Or install to user directory
-mkdir -p ~/.local/bin
-mv golint-sl ~/.local/bin/
-export PATH=$PATH:~/.local/bin
+# Install golangci-lint v2
+curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(go env GOPATH)/bin v2.8.0
 ```
 
-### Docker Volume Mounting Issues
+### Build Fails
 
-If analysis fails in Docker with module errors:
+If `golangci-lint custom` fails:
+
+1. Ensure your Go version is 1.21 or later: `go version`
+2. Ensure `go.mod` exists and modules are downloaded: `go mod download`
+3. Check that the golint-sl version in `.custom-gcl.yml` exists on the module proxy
+
+### Plugin Not Loaded
+
+If `./custom-gcl linters | grep golint-sl` returns nothing:
+
+1. Ensure `.golangci.yml` has `golint-sl` in the `enable` list
+2. Ensure the `settings.custom.golint-sl.type` is set to `module`
+3. Rebuild the binary: `golangci-lint custom`
+
+---
+
+::: details Standalone Binary (Advanced)
+For quick local testing or development, you can also install golint-sl as a standalone binary:
 
 ```bash
-# Ensure go.mod exists and modules are downloaded
-go mod download
-
-# Then run Docker
-docker run --rm -v $(pwd):/app -w /app ghcr.io/spechtlabs/golint-sl:latest ./...
+go install github.com/spechtlabs/golint-sl/cmd/golint-sl@latest
+golint-sl ./...
 ```
+
+The standalone binary uses its own configuration file (`.golint-sl.yaml`) and CLI flags. See the [CLI Reference](/reference/cli) for details. For production use, the golangci-lint plugin is strongly recommended.
+:::
 
 ## Next Steps
 

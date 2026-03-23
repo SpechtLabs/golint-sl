@@ -31,9 +31,9 @@ config:
         icon: mdi:magnify-scan
         details: 32 analyzers covering error handling, observability, Kubernetes, testability, resource management, safety, and architecture.
 
-      - title: Zero Configuration
-        icon: mdi:cog-off
-        details: Works out of the box with sensible defaults. Run `golint-sl ./...` and immediately catch issues others miss.
+      - title: golangci-lint Plugin
+        icon: mdi:puzzle
+        details: Runs as a golangci-lint module plugin. Unified configuration, nolint directives, and seamless integration with your existing linting setup.
 
       - title: Actionable Feedback
         icon: mdi:message-text
@@ -72,18 +72,27 @@ config:
 
 ## Quick Start
 
-Get up and running in under a minute:
+Get up and running in under a minute. golint-sl runs as a [golangci-lint](https://golangci-lint.run/) module plugin.
 
-```bash
-# Install
-go install github.com/spechtlabs/golint-sl/cmd/golint-sl@latest
+**1. Add `.custom-gcl.yml` to your project:**
 
-# Run on your project
-golint-sl ./...
+```yaml
+version: v2.8.0
+
+plugins:
+  - module: 'github.com/spechtlabs/golint-sl'
+    version: v0.1.0
 ```
 
-::: tip Looking for more options?
-See the [Installation Guide](/getting-started/installation) for Docker, pre-built binaries, and other installation methods.
+**2. Build the custom binary and run:**
+
+```bash
+golangci-lint custom
+./custom-gcl run ./...
+```
+
+::: tip Looking for more details?
+See the [Installation Guide](/getting-started/installation) for full setup instructions and configuration.
 :::
 
 ## What Makes golint-sl Different?
@@ -148,4 +157,4 @@ golint-sl integrates with your existing workflow:
 | ---------------------------------------- | --------------------------------------- |
 | [GitHub Actions](/guides/github-actions) | Run on every PR with clear annotations  |
 | [Pre-commit Hooks](/guides/pre-commit)   | Catch issues before they're committed   |
-| [golangci-lint](/guides/golangci-lint)   | Use as a plugin alongside other linters |
+| [golangci-lint](/guides/golangci-lint)   | Configuration and setup details         |
