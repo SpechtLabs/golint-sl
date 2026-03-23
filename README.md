@@ -47,16 +47,15 @@ linters:
 ./custom-gcl run ./...
 ```
 
-<details>
-<summary>Standalone binary (for quick local testing)</summary>
-
-```bash
-go install github.com/spechtlabs/golint-sl/cmd/golint-sl@latest
-golint-sl ./...
-```
-
-The standalone binary uses its own config file (`.golint-sl.yaml`) and CLI flags. For production use, the golangci-lint plugin is recommended.
-</details>
+> **Standalone binary (for quick local testing)**
+>
+> ```bash
+> go install github.com/spechtlabs/golint-sl/cmd/golint-sl@latest
+> golint-sl ./...
+> ```
+>
+> The standalone binary uses its own config file (`.golint-sl.yaml`) and CLI flags.
+> For production use, the golangci-lint plugin is recommended.
 
 ## Usage
 
