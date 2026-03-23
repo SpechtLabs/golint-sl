@@ -6,41 +6,66 @@ A comprehensive Go linter with **31 analyzers** enforcing code quality, safety, 
 
 ## Installation
 
-### Go Install
+golint-sl runs as a [golangci-lint](https://golangci-lint.run/) **module plugin** (requires golangci-lint v2).
+
+### 1. Add `.custom-gcl.yml`
+
+```yaml
+version: v2.8.0
+
+plugins:
+  - module: 'github.com/spechtlabs/golint-sl'
+    version: v0.1.0  # Use latest version
+```
+
+### 2. Build Custom Binary
+
+```bash
+golangci-lint custom
+```
+
+### 3. Configure `.golangci.yml`
+
+```yaml
+version: "2"
+
+linters:
+  enable:
+    - golint-sl
+
+  settings:
+    custom:
+      golint-sl:
+        type: module
+        description: SpechtLabs Go linter collection
+        original-url: github.com/spechtlabs/golint-sl
+```
+
+### 4. Run
+
+```bash
+./custom-gcl run ./...
+```
+
+<details>
+<summary>Standalone binary (for quick local testing)</summary>
 
 ```bash
 go install github.com/spechtlabs/golint-sl/cmd/golint-sl@latest
+golint-sl ./...
 ```
 
-### Build from Source
-
-```bash
-git clone https://github.com/SpechtLabs/golint-sl.git
-cd golint-sl
-make install
-```
-
-### Binary Download
-
-Download from [GitHub Releases](https://github.com/SpechtLabs/golint-sl/releases)
-
-### Docker
-
-```bash
-docker run --rm -v $(pwd):/app -w /app ghcr.io/spechtlabs/golint-sl:latest ./...
-```
+The standalone binary uses its own config file (`.golint-sl.yaml`) and CLI flags. For production use, the golangci-lint plugin is recommended.
+</details>
 
 ## Usage
 
 ```bash
 # Run all analyzers
-golint-sl ./...
+./custom-gcl run ./...
 
-# Run specific analyzers
-golint-sl -wideevents -contextpropagation -nilcheck ./...
-
-# List all analyzers
-golint-sl -help
+# Verify plugin is loaded
+./custom-gcl linters | grep golint-sl
 ```
 
 ## Analyzers (31)
@@ -116,69 +141,30 @@ golint-sl -help
 | `lifecycle`      | Component lifecycle (Run/Close) patterns |
 | `dataflow`       | SSA-based data flow analysis             |
 
-## CI/CD Integration
-
-### GitHub Actions
-
-```yaml
-- name: Run golint-sl
-  run: |
-    go install github.com/spechtlabs/golint-sl/cmd/golint-sl@latest
-    golint-sl ./...
-```
-
-### Pre-commit
-
-```yaml
-# .pre-commit-config.yaml
-repos:
-  - repo: https://github.com/SpechtLabs/golint-sl
-    rev: v0.1.0  # Use the latest release
-    hooks:
-      - id: golint-sl  # Run on all packages
-      # - id: golint-sl-pkg  # Run only on changed packages (faster)
-```
-
-Available hooks:
-
-| Hook ID | Description |
-|---------|-------------|
-| `golint-sl` | Run all analyzers on `./...` |
-| `golint-sl-pkg` | Run only on changed Go files (faster for large repos) |
-
 ## Configuration
 
-Create a `.golint-sl.yaml` file in your project root:
+Disable specific analyzers via `.golangci.yml`:
 
 ```yaml
-# Configure which analyzers are enabled/disabled
-analyzers:
-  # Disable specific analyzers
-  todotracker: false
-  exporteddoc: false
-  humaneerror: false
-```
+version: "2"
 
-To disable all analyzers by default and enable only specific ones:
+linters:
+  enable:
+    - golint-sl
 
-```yaml
-analyzers:
-  # Disable all by default
-  default: false
-
-  # Enable only these analyzers
-  nilcheck: true
-  contextfirst: true
-  resourceclose: true
-```
-
-The config file is automatically discovered by searching from the current directory up to the filesystem root.
-
-You can also use command-line flags (these override config file settings):
-
-```bash
-golint-sl -humaneerror=false ./...
-golint-sl -help  # See all available flags
+  settings:
+    custom:
+      golint-sl:
+        type: module
+        description: SpechtLabs Go linter collection
+        original-url: github.com/spechtlabs/golint-sl
+        settings:
+          disabled-analyzers:
+            - todotracker
+            - exporteddoc
+            - reconciler      # Not a Kubernetes project
+            - statusupdate
+            - sideeffects
 ```
 
 ## Suppressing Warnings
@@ -202,6 +188,46 @@ The directive can also be on the preceding line:
 //nolint:contextfirst
 func Handler(w http.ResponseWriter, r *http.Request, ctx context.Context) {}
 ```
+
+## CI/CD Integration
+
+### GitHub Actions
+
+```yaml
+- uses: actions/setup-go@v5
+  with:
+    go-version: '1.22'
+    cache: true
+
+- name: Install golangci-lint
+  run: |
+    curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(go env GOPATH)/bin v2.8.0
+
+- name: Build custom golangci-lint with golint-sl
+  run: golangci-lint custom
+
+- name: Run linter
+  run: ./custom-gcl run ./...
+```
+
+### Pre-commit
+
+```yaml
+# .pre-commit-config.yaml
+repos:
+  - repo: https://github.com/SpechtLabs/golint-sl
+    rev: v0.1.0  # Use the latest release
+    hooks:
+      - id: golint-sl  # Run on all packages
+      # - id: golint-sl-pkg  # Run only on changed packages (faster)
+```
+
+Available hooks:
+
+| Hook ID | Description |
+|---------|-------------|
+| `golint-sl` | Build custom binary and run all analyzers on `./...` |
+| `golint-sl-pkg` | Build custom binary and run only on changed Go files (faster for large repos) |
 
 ## Philosophy
 

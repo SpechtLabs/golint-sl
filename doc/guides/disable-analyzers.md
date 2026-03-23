@@ -8,20 +8,26 @@ Sometimes you need to suppress golint-sl warnings. Here's how to do it at variou
 
 ## Globally (Project-Wide)
 
-Disable an analyzer for your entire project in `.golint-sl.yaml`:
+Disable analyzers for your entire project in `.golangci.yml`:
 
 ```yaml
-analyzers:
-  todotracker: false   # We use a different TODO tracking system
-  exporteddoc: false   # Internal project, docs not required
-```
+version: "2"
 
-## Via Command Line
+linters:
+  enable:
+    - golint-sl
 
-Disable for a single run:
-
-```bash
-golint-sl -todotracker=false -exporteddoc=false ./...
+  settings:
+    custom:
+      golint-sl:
+        type: module
+        settings:
+          disabled-analyzers:
+            - todotracker      # We use a different TODO tracking system
+            - exporteddoc      # Internal project, docs not required
+            - reconciler       # Not a Kubernetes project
+            - statusupdate
+            - sideeffects
 ```
 
 ## Per-Line with Directives
@@ -64,7 +70,7 @@ To suppress warnings for an entire file, use a directive at the package declarat
 package legacy
 ```
 
-Note: This suppresses warnings only on the package line itself. For true file-wide suppression, consider using the config file instead.
+Note: This suppresses warnings only on the package line itself. For true file-wide suppression, consider using the `disabled-analyzers` setting instead.
 
 ## Excluding Files
 
@@ -81,28 +87,21 @@ golint-sl automatically skips common generated file patterns:
 
 The `vendor/` directory is automatically skipped.
 
-### Custom Exclusions
+### Custom Exclusions via golangci-lint
 
-Use your shell to exclude files:
+Use golangci-lint's built-in exclusion mechanisms:
 
-```bash
-# Exclude specific directories
-golint-sl $(go list ./... | grep -v /testdata/)
+```yaml
+# .golangci.yml
+version: "2"
 
-# Exclude patterns
-golint-sl $(go list ./... | grep -v generated)
-```
+issues:
+  exclude-dirs:
+    - testdata
+    - generated
 
-## Per-Package
-
-Run golint-sl only on specific packages:
-
-```bash
-# Only these packages
-golint-sl ./cmd/... ./internal/core/...
-
-# Everything except tests
-golint-sl $(go list ./... | grep -v /test/)
+  exclude-files:
+    - ".*_generated\\.go$"
 ```
 
 ## When to Disable
@@ -124,46 +123,76 @@ Invalid reasons:
 
 ## Gradual Adoption
 
-If adopting golint-sl on an existing codebase, use `default: false` and enable analyzers incrementally:
+If adopting golint-sl on an existing codebase, start with a small set of analyzers and expand:
 
 ```yaml
-# Week 1: Start with safety checks
-analyzers:
-  default: false
-  nilcheck: true
-  resourceclose: true
+# .golangci.yml - Week 1: Start with safety checks
+version: "2"
 
-# Week 2: Add error handling
-analyzers:
-  default: false
-  nilcheck: true
-  resourceclose: true
-  errorwrap: true
-  sentinelerrors: true
+linters:
+  enable:
+    - golint-sl
 
-# Week 3: Add more...
+  settings:
+    custom:
+      golint-sl:
+        type: module
+        settings:
+          disabled-analyzers:
+            # Disable everything except safety checks
+            - humaneerror
+            - errorwrap
+            - sentinelerrors
+            - wideevents
+            - contextlogger
+            - contextpropagation
+            - reconciler
+            - statusupdate
+            - sideeffects
+            - clockinterface
+            - interfaceconsistency
+            - mockverify
+            - optionspattern
+            - httpclient
+            - goroutineleak
+            - nopanic
+            - nestingdepth
+            - syncaccess
+            - closurecomplexity
+            - emptyinterface
+            - returninterface
+            - contextfirst
+            - pkgnaming
+            - functionsize
+            - exporteddoc
+            - todotracker
+            - hardcodedcreds
+            - lifecycle
+            - dataflow
+            # nilcheck and resourceclose are NOT listed, so they stay enabled
 ```
 
-This prevents overwhelming the team with hundreds of warnings at once.
+Then remove analyzers from the disabled list as you fix issues, enabling more checks over time.
 
 ## Documenting Disabled Analyzers
 
-Always document why an analyzer is disabled:
+Always document why an analyzer is disabled using YAML comments:
 
 ```yaml
-analyzers:
-  # Disabled: We use logrus with a custom wide-event middleware
-  # See: internal/logging/README.md
-  wideevents: false
+settings:
+  disabled-analyzers:
+    # We use logrus with a custom wide-event middleware
+    # See: internal/logging/README.md
+    - wideevents
 
-  # Disabled: Kubernetes analyzers not applicable to CLI project
-  reconciler: false
-  statusupdate: false
-  sideeffects: false
+    # Kubernetes analyzers not applicable to CLI project
+    - reconciler
+    - statusupdate
+    - sideeffects
 
-  # Disabled: Migrating incrementally, will enable Q2 2025
-  # Tracking: JIRA-1234
-  humaneerror: false
+    # Migrating incrementally, will enable Q2 2025
+    # Tracking: JIRA-1234
+    - humaneerror
 ```
 
 ## Reporting False Positives

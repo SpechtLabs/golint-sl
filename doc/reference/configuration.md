@@ -6,70 +6,113 @@ createTime: 2025/01/16 10:00:00
 
 Complete reference for golint-sl configuration.
 
-## Configuration File
+## Configuration Files
 
-golint-sl uses a YAML configuration file named `.golint-sl.yaml`.
+golint-sl uses two configuration files when running as a golangci-lint module plugin:
 
-### File Location
+| File | Purpose |
+|------|---------|
+| `.custom-gcl.yml` | Defines plugin version and golangci-lint version for the custom binary |
+| `.golangci.yml` | Enables the plugin and configures analyzer settings |
 
-golint-sl searches for the configuration file by:
+## `.custom-gcl.yml`
 
-1. Starting from the current working directory
-2. Walking up to parent directories
-3. Stopping at the filesystem root
-
-The first `.golint-sl.yaml` found is used.
-
-### Example Locations
-
-```text
-/home/user/myproject/.golint-sl.yaml    # Project root (recommended)
-/home/user/.golint-sl.yaml              # User-level default
-```
-
-## File Format
+This file tells golangci-lint how to build the custom binary with golint-sl included.
 
 ```yaml
-# .golint-sl.yaml
-analyzers:
-  # Analyzer name: enabled (true/false)
-  nilcheck: true
-  wideevents: true
-  reconciler: false
+version: v2.8.0  # golangci-lint version
+
+plugins:
+  - module: 'github.com/spechtlabs/golint-sl'
+    version: v0.1.0  # golint-sl version
 ```
 
-## Configuration Options
+### Fields
 
-### analyzers
+| Field | Required | Description |
+|-------|----------|-------------|
+| `version` | Yes | golangci-lint version to use as the base binary |
+| `plugins[].module` | Yes | Go module path for golint-sl |
+| `plugins[].version` | Yes | Version tag of golint-sl to use |
 
-Map of analyzer names to enabled state.
+Build the custom binary with:
+
+```bash
+golangci-lint custom
+```
+
+This creates `./custom-gcl` in your project directory.
+
+## `.golangci.yml`
+
+This is golangci-lint's standard configuration file. golint-sl is configured under the `linters.settings.custom` section.
+
+### Minimal Configuration
 
 ```yaml
-analyzers:
-  # Enable/disable specific analyzers
-  nilcheck: true
-  todotracker: false
+version: "2"
+
+linters:
+  enable:
+    - golint-sl
+
+  settings:
+    custom:
+      golint-sl:
+        type: module
+        description: SpechtLabs Go linter collection
+        original-url: github.com/spechtlabs/golint-sl
 ```
 
-### analyzers.default
-
-Special key that sets the default state for all analyzers.
+### Full Configuration
 
 ```yaml
-analyzers:
-  # Disable all by default
-  default: false
+version: "2"
 
-  # Then enable specific ones
-  nilcheck: true
-  resourceclose: true
+linters:
+  enable:
+    - golint-sl
+
+  settings:
+    custom:
+      golint-sl:
+        type: module
+        description: SpechtLabs Go linter collection
+        original-url: github.com/spechtlabs/golint-sl
+        settings:
+          disabled-analyzers:
+            - todotracker
+            - reconciler
+            - statusupdate
+            - sideeffects
 ```
 
-If `default` is not specified, all analyzers are enabled.
+### Plugin Settings Fields
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `type` | Yes | Must be `module` |
+| `description` | No | Human-readable description |
+| `original-url` | No | Source URL for the plugin |
+| `settings.disabled-analyzers` | No | List of analyzer names to disable |
+
+## Plugin Settings
+
+### disabled-analyzers
+
+A list of analyzer names to disable. All 32 analyzers are enabled by default.
+
+```yaml
+settings:
+  disabled-analyzers:
+    - analyzername
+```
+
+See [Plugin Settings Reference](/reference/cli) for the complete list of analyzer names.
 
 ## Analyzer Names
 
-All 31 analyzers and their names:
+All 32 analyzers and their names:
 
 ### Error Handling
 
@@ -147,170 +190,172 @@ All 31 analyzers and their names:
 ### Minimal (Accept All Defaults)
 
 ```yaml
-# .golint-sl.yaml
-# Empty file or no file - all analyzers enabled
+# .golangci.yml
+version: "2"
+
+linters:
+  enable:
+    - golint-sl
+
+  settings:
+    custom:
+      golint-sl:
+        type: module
+        description: SpechtLabs Go linter collection
+        original-url: github.com/spechtlabs/golint-sl
 ```
 
 ### Backend API Service
 
 ```yaml
-# .golint-sl.yaml
-analyzers:
-  # Disable Kubernetes-specific analyzers
-  reconciler: false
-  statusupdate: false
-  sideeffects: false
+# .golangci.yml
+version: "2"
+
+linters:
+  enable:
+    - golint-sl
+
+  settings:
+    custom:
+      golint-sl:
+        type: module
+        settings:
+          disabled-analyzers:
+            - reconciler
+            - statusupdate
+            - sideeffects
 ```
 
 ### Kubernetes Operator
 
 ```yaml
-# .golint-sl.yaml
-analyzers:
-  # Disable observability analyzers (use controller-runtime logging)
-  wideevents: false
-  contextlogger: false
+# .golangci.yml
+version: "2"
+
+linters:
+  enable:
+    - golint-sl
+
+  settings:
+    custom:
+      golint-sl:
+        type: module
+        settings:
+          disabled-analyzers:
+            - wideevents
+            - contextlogger
 ```
 
 ### CLI Application
 
 ```yaml
-# .golint-sl.yaml
-analyzers:
-  # Disable service-oriented analyzers
-  wideevents: false
-  contextlogger: false
-  contextpropagation: false
-  reconciler: false
-  statusupdate: false
-  sideeffects: false
+# .golangci.yml
+version: "2"
+
+linters:
+  enable:
+    - golint-sl
+
+  settings:
+    custom:
+      golint-sl:
+        type: module
+        settings:
+          disabled-analyzers:
+            - wideevents
+            - contextlogger
+            - contextpropagation
+            - reconciler
+            - statusupdate
+            - sideeffects
 ```
 
 ### Library Package
 
 ```yaml
-# .golint-sl.yaml
-analyzers:
-  # Focus on API quality
-  nopanic: true        # Libraries must not panic
-  returninterface: true
-  exporteddoc: true
-  emptyinterface: true
+# .golangci.yml
+version: "2"
 
-  # Disable application-specific analyzers
-  wideevents: false
-  contextlogger: false
-  reconciler: false
-  statusupdate: false
-  sideeffects: false
+linters:
+  enable:
+    - golint-sl
+
+  settings:
+    custom:
+      golint-sl:
+        type: module
+        settings:
+          disabled-analyzers:
+            - wideevents
+            - contextlogger
+            - reconciler
+            - statusupdate
+            - sideeffects
 ```
 
-### Gradual Adoption
+## golangci-lint Issue Exclusion
+
+Use golangci-lint's built-in exclusion mechanisms alongside golint-sl settings:
+
+```yaml
+# .golangci.yml
+version: "2"
+
+issues:
+  # Exclude specific directories
+  exclude-dirs:
+    - testdata
+    - generated
+
+  # Exclude file patterns
+  exclude-files:
+    - ".*_generated\\.go$"
+
+  # Exclude specific rules by text
+  exclude-rules:
+    - text: "pointer parameter .* used without nil check"
+      path: "internal/legacy/"
+```
+
+## Avoiding Linter Overlap
+
+Disable golangci-lint linters that overlap with golint-sl:
+
+```yaml
+linters:
+  enable:
+    - golint-sl
+
+  disable:
+    - nilerr       # Covered by golint-sl's nilcheck
+    - bodyclose    # Covered by golint-sl's resourceclose
+    - contextcheck # Covered by golint-sl's contextpropagation
+```
+
+---
+
+::: details Standalone Configuration (.golint-sl.yaml)
+When running as a standalone binary, golint-sl reads `.golint-sl.yaml` from the current directory or any parent directory:
 
 ```yaml
 # .golint-sl.yaml
-# Start with minimal set
 analyzers:
-  default: false
-
-  # Week 1: Safety
-  nilcheck: true
+  default: false   # Disable all by default
+  nilcheck: true   # Enable specific analyzers
   resourceclose: true
-
-  # Week 2: Add as you fix issues
-  # errorwrap: true
-  # sentinelerrors: true
 ```
 
-### Strict Mode
-
-```yaml
-# .golint-sl.yaml
-# All analyzers enabled (default behavior)
-# Explicit for documentation
-analyzers:
-  humaneerror: true
-  errorwrap: true
-  sentinelerrors: true
-  wideevents: true
-  contextlogger: true
-  contextpropagation: true
-  reconciler: true
-  statusupdate: true
-  sideeffects: true
-  clockinterface: true
-  interfaceconsistency: true
-  mockverify: true
-  optionspattern: true
-  resourceclose: true
-  httpclient: true
-  goroutineleak: true
-  nilcheck: true
-  nopanic: true
-  nestingdepth: true
-  syncaccess: true
-  closurecomplexity: true
-  emptyinterface: true
-  returninterface: true
-  contextfirst: true
-  pkgnaming: true
-  functionsize: true
-  exporteddoc: true
-  todotracker: true
-  hardcodedcreds: true
-  lifecycle: true
-  dataflow: true
-```
-
-## Command-Line Overrides
-
-Command-line flags always override configuration file settings:
+Command-line flags override config file settings:
 
 ```bash
-# Config says nilcheck: false, but enable it
-golint-sl -nilcheck ./...
-
-# Config says wideevents: true, but disable it
-golint-sl -wideevents=false ./...
+golint-sl -nilcheck=false ./...
 ```
 
-## Validation
-
-golint-sl validates the configuration file:
-
-- Unknown analyzer names are ignored (for forward compatibility)
-- Invalid YAML causes an error
-- Invalid values (non-boolean) cause an error
-
-## Multiple Configuration Files
-
-Only one configuration file is used (the first one found walking up from the current directory).
-
-For monorepos with different requirements per directory:
-
-```text
-mymonorepo/
-├── .golint-sl.yaml           # Default config
-├── services/
-│   └── api/
-│       └── .golint-sl.yaml   # API-specific config
-├── operators/
-│   └── myoperator/
-│       └── .golint-sl.yaml   # Kubernetes-specific config
-└── libs/
-    └── common/
-        └── .golint-sl.yaml   # Library-specific config
-```
-
-Run from the appropriate directory to pick up the right config:
-
-```bash
-cd services/api && golint-sl ./...
-cd operators/myoperator && golint-sl ./...
-```
+The standalone config is not used when running as a golangci-lint plugin.
+:::
 
 ## See Also
 
-- [CLI Reference](/reference/cli)
+- [Plugin Settings Reference](/reference/cli)
 - [Configure Analyzers](/guides/configure-analyzers)
 - [Disable Analyzers](/guides/disable-analyzers)

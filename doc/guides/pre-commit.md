@@ -4,7 +4,11 @@ permalink: /guides/pre-commit
 createTime: 2025/01/16 10:00:00
 ---
 
-Run golint-sl automatically before every commit to catch issues early.
+Run golint-sl automatically before every commit to catch issues early. The hooks build a custom golangci-lint binary with golint-sl and run it on your code.
+
+## Prerequisites
+
+Your project must have both `.custom-gcl.yml` and `.golangci.yml` configured. See [Installation](/getting-started/installation) for setup.
 
 ## Using pre-commit Framework
 
@@ -44,8 +48,8 @@ golint-sl provides two hooks:
 
 | Hook ID | Description | Speed |
 |---------|-------------|-------|
-| `golint-sl` | Runs on all packages (`./...`) | Thorough |
-| `golint-sl-pkg` | Runs only on changed packages | Fast |
+| `golint-sl` | Builds `custom-gcl` and runs on all packages (`./...`) | Thorough |
+| `golint-sl-pkg` | Builds `custom-gcl` and runs only on changed packages | Fast |
 
 For large repositories, use `golint-sl-pkg` for faster feedback:
 
@@ -56,6 +60,10 @@ repos:
     hooks:
       - id: golint-sl-pkg  # Only check changed packages
 ```
+
+::: tip
+The hooks require `golangci-lint` to be installed and available in your `PATH`. The custom binary is built automatically during the hook run.
+:::
 
 ### Running Manually
 
@@ -94,8 +102,14 @@ Create `.git/hooks/pre-commit`:
 ```bash
 #!/bin/bash
 
+# Build custom binary if it doesn't exist
+if [ ! -f ./custom-gcl ]; then
+    echo "Building custom golangci-lint with golint-sl..."
+    golangci-lint custom
+fi
+
 echo "Running golint-sl..."
-golint-sl ./...
+./custom-gcl run ./...
 exit_code=$?
 
 if [ $exit_code -ne 0 ]; then
@@ -127,12 +141,18 @@ if [ -z "$staged_go_files" ]; then
     exit 0
 fi
 
+# Build custom binary if it doesn't exist
+if [ ! -f ./custom-gcl ]; then
+    echo "Building custom golangci-lint with golint-sl..."
+    golangci-lint custom
+fi
+
 echo "Running golint-sl on staged files..."
 
 # Get unique package directories
 packages=$(echo "$staged_go_files" | xargs -I {} dirname {} | sort -u | sed 's|^|./|')
 
-golint-sl $packages
+./custom-gcl run $packages
 exit_code=$?
 
 if [ $exit_code -ne 0 ]; then
@@ -157,33 +177,28 @@ Git hooks aren't versioned by default. To share hooks with your team:
 
 3. Add setup instructions to your README with the command `git config core.hooksPath scripts/hooks`
 
-## With Husky (Node.js Projects)
-
-For projects using Node.js tooling, [Husky](https://typicode.github.io/husky/) is popular:
-
-1. Install Husky:
-
-   ```bash
-   npm install husky --save-dev
-   npx husky init
-   ```
-
-2. Add golint-sl hook:
-
-   ```bash
-   echo "golint-sl ./..." > .husky/pre-commit
-   ```
-
 ## Configuration
 
-golint-sl automatically uses `.golint-sl.yaml` if present:
+golint-sl picks up your `.golangci.yml` configuration automatically. Disable analyzers that are too noisy for pre-commit:
 
 ```yaml
-# .golint-sl.yaml
-analyzers:
-  # Disable noisy analyzers for pre-commit
-  todotracker: false
-  exporteddoc: false
+# .golangci.yml
+version: "2"
+
+linters:
+  enable:
+    - golint-sl
+
+  settings:
+    custom:
+      golint-sl:
+        type: module
+        description: SpechtLabs Go linter collection
+        original-url: github.com/spechtlabs/golint-sl
+        settings:
+          disabled-analyzers:
+            - todotracker
+            - exporteddoc
 ```
 
 ## Troubleshooting
@@ -200,16 +215,16 @@ pre-commit install
 ls -la .git/hooks/pre-commit
 ```
 
-### golint-sl Not Found
+### golangci-lint Not Found
 
-The hook runs in a clean environment. Ensure golint-sl is in a standard location:
+The hook requires golangci-lint to be installed:
 
 ```bash
 # Check installation
-which golint-sl
+which golangci-lint
 
-# Add to PATH in hook if needed
-export PATH=$PATH:$(go env GOPATH)/bin
+# Install if needed
+curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(go env GOPATH)/bin v2.8.0
 ```
 
 ### Too Slow
@@ -217,11 +232,16 @@ export PATH=$PATH:$(go env GOPATH)/bin
 For large codebases:
 
 1. Use `golint-sl-pkg` to check only changed packages
-2. Disable expensive analyzers in pre-commit config:
+2. Disable expensive analyzers in `.golangci.yml`:
 
    ```yaml
-   analyzers:
-     dataflow: false  # SSA analysis is slower
+   settings:
+     custom:
+       golint-sl:
+         type: module
+         settings:
+           disabled-analyzers:
+             - dataflow  # SSA analysis is slower
    ```
 
 3. Run full checks in CI instead

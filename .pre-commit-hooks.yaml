@@ -1,17 +1,16 @@
 - id: golint-sl
   name: golint-sl
-  description: Run golint-sl - 32 analyzers for Go best practices
-  entry: golint-sl
-  language: golang
+  description: Build custom golangci-lint binary with golint-sl and run on all packages
+  entry: bash -c 'golangci-lint custom && ./custom-gcl run ./...'
+  language: system
   types: [go]
   pass_filenames: false
-  args: ["./..."]
 
 - id: golint-sl-pkg
   name: golint-sl (per package)
-  description: Run golint-sl on changed packages only
-  entry: golint-sl
-  language: golang
+  description: Build custom golangci-lint binary with golint-sl and run on changed packages
+  entry: bash -c 'golangci-lint custom && ./custom-gcl run'
+  language: system
   types: [go]
   pass_filenames: true
   require_serial: true

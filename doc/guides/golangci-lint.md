@@ -4,13 +4,9 @@ permalink: /guides/golangci-lint
 createTime: 2025/01/16 10:00:00
 ---
 
-golint-sl integrates with [golangci-lint](https://golangci-lint.run/) as a **module plugin** (golangci-lint v2) or can be run as a standalone tool alongside it.
+golint-sl integrates with [golangci-lint](https://golangci-lint.run/) as a **module plugin** (golangci-lint v2). This provides unified configuration, `nolint` directives, and issue exclusion through golangci-lint's config.
 
-## Module Plugin (Recommended)
-
-golangci-lint v2 supports module plugins, allowing you to build a custom binary with golint-sl baked in. This provides unified configuration, `nolint` directives, and issue exclusion through golangci-lint's config.
-
-### Building a Custom Binary
+## Building a Custom Binary
 
 1. **Create a `.custom-gcl.yml` file** in your project root:
 
@@ -60,7 +56,7 @@ linters:
 ./custom-gcl run ./...
 ```
 
-### Verifying the Plugin
+## Verifying the Plugin
 
 To verify golint-sl is loaded:
 
@@ -68,7 +64,7 @@ To verify golint-sl is loaded:
 ./custom-gcl linters | grep golint-sl
 ```
 
-### GitHub Actions with Module Plugin
+## GitHub Actions
 
 ```yaml
 name: Lint
@@ -119,53 +115,7 @@ For faster CI runs, you can cache the custom binary:
 
 :::
 
-## Running Separately
-
-Alternatively, run both tools independently:
-
-```bash
-# Run golangci-lint with your existing config
-golangci-lint run ./...
-
-# Run golint-sl for production-focused checks
-golint-sl ./...
-```
-
-### GitHub Actions Example (Separate)
-
-```yaml
-name: Lint
-
-on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
-
-jobs:
-  lint:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-go@v5
-        with:
-          go-version: '1.22'
-          cache: true
-
-      - name: golangci-lint
-        uses: golangci/golangci-lint-action@v4
-        with:
-          version: latest
-
-      - name: Install golint-sl
-        run: go install github.com/spechtlabs/golint-sl/cmd/golint-sl@latest
-
-      - name: Run golint-sl
-        run: golint-sl ./...
-```
-
-## Why Both?
+## Why Both golangci-lint and golint-sl?
 
 golangci-lint and golint-sl serve complementary purposes:
 
@@ -174,7 +124,7 @@ golangci-lint and golint-sl serve complementary purposes:
 | golangci-lint | Broad coverage: style, complexity, bugs, security |
 | golint-sl | Production patterns: observability, Kubernetes, safety |
 
-Together they provide comprehensive static analysis.
+By running golint-sl as a golangci-lint plugin, you get both in a single tool invocation.
 
 ## Avoiding Overlap
 
@@ -186,10 +136,10 @@ Some golangci-lint linters overlap with golint-sl analyzers:
 | `bodyclose` | `resourceclose` | Use golint-sl (catches more) |
 | `contextcheck` | `contextpropagation` | Use golint-sl (production-focused) |
 
-If using both, disable overlapping golangci-lint linters:
+Disable overlapping golangci-lint linters in your config:
 
 ```yaml
-# .golangci.yaml
+# .golangci.yml
 linters:
   disable:
     - nilerr       # Using golint-sl's nilcheck
@@ -199,7 +149,7 @@ linters:
 
 ## Using nolint Directives
 
-When using golint-sl as a golangci-lint plugin, you can use standard `nolint` directives:
+Use standard `nolint` directives to suppress warnings:
 
 ```go
 //nolint:golint-sl
@@ -231,7 +181,7 @@ golint-sl includes 30 analyzers across these categories:
 
 ## Disabling Specific Analyzers
 
-When using the module plugin, you can disable specific analyzers via settings:
+Disable analyzers via the plugin settings in `.golangci.yml`:
 
 ```yaml
 # .golangci.yml
@@ -248,53 +198,26 @@ linters:
             - sideeffects
 ```
 
-When running standalone, use the golint-sl config file:
-
-```yaml
-# .golint-sl.yaml
-analyzers:
-  reconciler: false
-  statusupdate: false
-  sideeffects: false
-```
-
 ## Makefile Integration
 
 ```makefile
-# Using module plugin
 .PHONY: lint
 lint: custom-gcl
- ./custom-gcl run ./...
+	./custom-gcl run ./...
 
 custom-gcl:
- golangci-lint custom
-
-# Or running separately
-.PHONY: lint-separate
-lint-separate: lint-golangci lint-sl
-
-.PHONY: lint-golangci
-lint-golangci:
- golangci-lint run ./...
-
-.PHONY: lint-sl
-lint-sl:
- golint-sl ./...
+	golangci-lint custom
 ```
 
-## Pre-commit with Both
+## Pre-commit with golangci-lint Plugin
 
 ```yaml
 # .pre-commit-config.yaml
 repos:
-  - repo: https://github.com/golangci/golangci-lint
-    rev: v1.55.2
-    hooks:
-      - id: golangci-lint
-
   - repo: https://github.com/SpechtLabs/golint-sl
     rev: v0.1.0
     hooks:
+      - id: golint-sl      # Full analysis on ./...
       - id: golint-sl-pkg  # Fast mode for pre-commit
 ```
 
