@@ -229,6 +229,18 @@ func checkOptionFunctionNaming(reporter *nolint.Reporter, fn *ast.FuncDecl, opti
 		}
 
 		if !returnsOption {
+			// Builder pattern: method returns the same type as its receiver
+			// e.g. func (b *Builder) WithTimeout(d time.Duration) *Builder
+			if isBuilderPattern(fn) {
+				return
+			}
+
+			// Context enrichment: takes context.Context and returns context.Context
+			// e.g. func WithFields(ctx context.Context, fields ...zap.Field) context.Context
+			if isContextEnrichment(fn) {
+				return
+			}
+
 			reporter.Reportf(fn.Pos(),
 				"function %q starts with 'With' but doesn't return an Option type; this naming is reserved for option functions",
 				name)
@@ -269,6 +281,53 @@ func checkOptionFunctionBody(fn *ast.FuncDecl) {
 
 	// The return should be a function literal (or a named function, which is also valid)
 	_, _ = ret.Results[0].(*ast.FuncLit)
+}
+
+// isBuilderPattern checks if a method returns the same type as its receiver,
+// which is a standard Go builder pattern (e.g., func (b *Builder) WithX(...) *Builder).
+func isBuilderPattern(fn *ast.FuncDecl) bool {
+	if fn.Recv == nil || len(fn.Recv.List) == 0 {
+		return false
+	}
+	if fn.Type.Results == nil || len(fn.Type.Results.List) == 0 {
+		return false
+	}
+
+	receiverType := types.ExprString(fn.Recv.List[0].Type)
+	for _, result := range fn.Type.Results.List {
+		resultType := types.ExprString(result.Type)
+		if resultType == receiverType {
+			return true
+		}
+	}
+	return false
+}
+
+// isContextEnrichment checks if a function takes context.Context as its first
+// parameter and returns context.Context, which is a standard Go pattern for
+// enriching context (e.g., func WithFields(ctx context.Context, ...) context.Context).
+func isContextEnrichment(fn *ast.FuncDecl) bool {
+	if fn.Type.Params == nil || len(fn.Type.Params.List) == 0 {
+		return false
+	}
+	if fn.Type.Results == nil || len(fn.Type.Results.List) == 0 {
+		return false
+	}
+
+	// First param must be context.Context
+	firstParamType := types.ExprString(fn.Type.Params.List[0].Type)
+	if firstParamType != "context.Context" {
+		return false
+	}
+
+	// Must return context.Context
+	for _, result := range fn.Type.Results.List {
+		resultType := types.ExprString(result.Type)
+		if resultType == "context.Context" {
+			return true
+		}
+	}
+	return false
 }
 
 // OptionPatternInfo contains information about option pattern usage in a package

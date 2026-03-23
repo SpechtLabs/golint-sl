@@ -93,9 +93,10 @@ func run(pass *analysis.Pass) (interface{}, error) {
 			// Check if this function is in a test file
 			filename := pass.Fset.Position(node.Pos()).Filename
 			isTestFile := strings.HasSuffix(filename, "_test.go")
+			isMainPkg := pass.Pkg.Name() == "main"
 
 			checkConstructorReturnsInterface(reporter, node, interfaces)
-			checkDependencyInjection(reporter, node, isTestFile)
+			checkDependencyInjection(reporter, node, isTestFile, isMainPkg)
 		}
 	})
 
@@ -112,6 +113,12 @@ func checkStructFieldsUseInterfaces(reporter *nolint.Reporter, pass *analysis.Pa
 	}
 
 	for _, field := range st.Fields.List {
+		// Skip fields with json struct tags — these are serializable data types
+		// (DTOs, CRDs, API types), not injectable dependencies.
+		if hasJSONTag(field) {
+			continue
+		}
+
 		for _, name := range field.Names {
 			fieldName := name.Name
 
@@ -133,6 +140,14 @@ func checkStructFieldsUseInterfaces(reporter *nolint.Reporter, pass *analysis.Pa
 			}
 		}
 	}
+}
+
+// hasJSONTag returns true if the field has a `json:` struct tag.
+func hasJSONTag(field *ast.Field) bool {
+	if field.Tag == nil {
+		return false
+	}
+	return strings.Contains(field.Tag.Value, `json:`)
 }
 
 // isInterfaceType checks if an AST expression represents an interface type
@@ -200,13 +215,18 @@ func checkConstructorReturnsInterface(reporter *nolint.Reporter, fn *ast.FuncDec
 }
 
 // checkDependencyInjection ensures dependencies are injected, not created internally
-func checkDependencyInjection(reporter *nolint.Reporter, fn *ast.FuncDecl, isTestFile bool) {
+func checkDependencyInjection(reporter *nolint.Reporter, fn *ast.FuncDecl, isTestFile bool, isMainPkg bool) {
 	if fn.Body == nil {
 		return
 	}
 
 	// Skip test files - creating mocks/fixtures inline in tests is standard practice
 	if isTestFile {
+		return
+	}
+
+	// Skip main packages - they are the composition root where concrete wiring belongs
+	if isMainPkg {
 		return
 	}
 
