@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.11](https://github.com/SpechtLabs/golint-sl/compare/v0.1.10...v0.1.11) (2026-05-14)
+
+
+### Features
+
+* **humaneerror:** support humane.Newf and humane.Wrapf ([#37](https://github.com/SpechtLabs/golint-sl/issues/37)) ([755567a](https://github.com/SpechtLabs/golint-sl/commit/755567ac7f89b9d7d517a5d23501896ca55b9b19))
+
+
+### Bug Fixes
+
+* **deps:** update module github.com/golangci/plugin-module-register to v0.1.2 ([#20](https://github.com/SpechtLabs/golint-sl/issues/20)) ([f7e9c1e](https://github.com/SpechtLabs/golint-sl/commit/f7e9c1e11db55e1ef53fb6a92eb2f25648e96a64))
+* **deps:** update module golang.org/x/tools to v0.43.0 ([#34](https://github.com/SpechtLabs/golint-sl/issues/34)) ([748894a](https://github.com/SpechtLabs/golint-sl/commit/748894a3edb2c225b2e5051f1500d578b0dfd793))
+
 ## [0.1.10](https://github.com/SpechtLabs/golint-sl/compare/v0.1.9...v0.1.10) (2026-03-23)
 
 
