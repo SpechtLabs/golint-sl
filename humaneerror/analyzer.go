@@ -23,9 +23,14 @@ const Doc = `enforce humane-errors-go usage with mandatory advice
 
 This analyzer ensures that:
 1. All exported functions returning errors use humane.Error instead of plain error
-2. All calls to humane.New() include at least one advice string
-3. All calls to humane.Wrap() include at least one advice string
+2. All calls to humane.New() / humane.Newf() include at least one advice string
+3. All calls to humane.Wrap() / humane.Wrapf() include at least one advice string
 4. Plain errors.New() and fmt.Errorf() are flagged in favor of humane equivalents
+
+For the formatted variants (Newf, Wrapf), advice is supplied via the
+humane.WithAdvice(...) Option intermixed with the format arguments — the
+analyzer accepts any WithAdvice call in the args as satisfying the advice
+requirement.
 
 The goal is to ensure all errors in the codebase provide actionable user guidance.`
 
@@ -282,13 +287,13 @@ func checkHumaneCallHasAdvice(reporter *nolint.Reporter, call *ast.CallExpr, imp
 		isHumaneCall = true
 	}
 
-	// Strategy 2: If identifier is a common humane alias and calling New/Wrap,
-	// this is almost certainly the humane package (even if import path detection failed)
-	// This handles cases where:
+	// Strategy 2: If identifier is a common humane alias and calling a known
+	// constructor, this is almost certainly the humane package (even if
+	// import path detection failed). This handles cases where:
 	// - import "github.com/sierrasoftworks/humane-errors-go" (package declares `package humane`)
 	// - The Go compiler uses the package name, not the last path component
 	funcName := sel.Sel.Name
-	if commonHumaneIdentifiers[ident.Name] && (funcName == "New" || funcName == "Wrap") {
+	if commonHumaneIdentifiers[ident.Name] && isHumaneConstructor(funcName) {
 		isHumaneCall = true
 	}
 
@@ -312,54 +317,155 @@ func checkHumaneCallHasAdvice(reporter *nolint.Reporter, call *ast.CallExpr, imp
 			reporter.Reportf(call.Pos(),
 				"humane.Wrap() should include at least one advice string: humane.Wrap(err, message, advice1, ...)")
 		}
+
+	case "Newf":
+		// humane.Newf(format string, args ...any) — advice is supplied via
+		// humane.WithAdvice(...) intermixed with format args. Require at
+		// least one WithAdvice option in the variadic tail.
+		if !hasWithAdviceOption(call.Args[adviceArgsStart(funcName):]) {
+			reporter.Reportf(call.Pos(),
+				"humane.Newf() should include at least one humane.WithAdvice(...) option: humane.Newf(format, args..., humane.WithAdvice(\"...\"))")
+		}
+
+	case "Wrapf":
+		// humane.Wrapf(cause error, format string, args ...any) — same shape
+		// as Newf but with a leading cause. Require at least one WithAdvice
+		// option in the variadic tail.
+		if len(call.Args) < 2 || !hasWithAdviceOption(call.Args[adviceArgsStart(funcName):]) {
+			reporter.Reportf(call.Pos(),
+				"humane.Wrapf() should include at least one humane.WithAdvice(...) option: humane.Wrapf(err, format, args..., humane.WithAdvice(\"...\"))")
+		}
 	}
 
 	// Check advice string quality (should be actionable)
 	checkAdviceQuality(reporter, call, funcName)
 }
 
-// checkAdviceQuality verifies that advice strings are actionable
-func checkAdviceQuality(reporter *nolint.Reporter, call *ast.CallExpr, funcName string) {
-	startIdx := 1 // For New(), advice starts at index 1
-	if funcName == "Wrap" {
-		startIdx = 2 // For Wrap(), advice starts at index 2
+// isHumaneConstructor reports whether name is one of the humane error
+// constructors the analyzer cares about.
+func isHumaneConstructor(name string) bool {
+	switch name {
+	case "New", "Newf", "Wrap", "Wrapf":
+		return true
 	}
+	return false
+}
 
-	for i := startIdx; i < len(call.Args); i++ {
-		lit, ok := call.Args[i].(*ast.BasicLit)
+// adviceArgsStart returns the index in call.Args where advice/options begin
+// for the given humane constructor.
+func adviceArgsStart(funcName string) int {
+	switch funcName {
+	case "New", "Newf":
+		return 1
+	case "Wrap", "Wrapf":
+		return 2
+	}
+	return 0
+}
+
+// hasWithAdviceOption reports whether any of the given args is a call to
+// humane.WithAdvice(...). This is a syntactic check — it accepts any
+// selector expression of the form `<ident>.WithAdvice(...)` where the
+// receiver looks like a humane import alias. False negatives (e.g.
+// passing a pre-built option from a variable) are accepted to keep the
+// rule simple; the common case is an inline WithAdvice call.
+func hasWithAdviceOption(args []ast.Expr) bool {
+	for _, arg := range args {
+		call, ok := arg.(*ast.CallExpr)
 		if !ok {
 			continue
 		}
-
-		advice := strings.Trim(lit.Value, `"`)
-		adviceLower := strings.ToLower(advice)
-
-		// Check for non-actionable advice patterns
-		nonActionablePatterns := []string{
-			"see underlying error",
-			"check error",
-			"something went wrong",
-			"an error occurred",
-			"failed",
-			"error:",
+		sel, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok {
+			continue
 		}
+		if sel.Sel == nil || sel.Sel.Name != "WithAdvice" {
+			continue
+		}
+		ident, ok := sel.X.(*ast.Ident)
+		if !ok {
+			continue
+		}
+		if commonHumaneIdentifiers[ident.Name] {
+			return true
+		}
+	}
+	return false
+}
 
-		for _, pattern := range nonActionablePatterns {
-			if strings.Contains(adviceLower, pattern) && len(advice) < 50 {
-				reporter.Reportf(lit.Pos(),
-					"advice %q may not be actionable; provide specific steps the user can take to resolve the issue",
-					advice)
-				break
+// checkAdviceQuality verifies that advice strings are actionable.
+//
+// For New/Wrap, advice strings are passed directly as the variadic tail
+// (starting at index 1 or 2). For Newf/Wrapf, the variadic tail mixes
+// format args (any) and humane.WithAdvice(...) options — only the strings
+// inside WithAdvice calls are advice. The format string itself is never
+// advice.
+func checkAdviceQuality(reporter *nolint.Reporter, call *ast.CallExpr, funcName string) {
+	startIdx := adviceArgsStart(funcName)
+	if startIdx == 0 {
+		return
+	}
+
+	switch funcName {
+	case "New", "Wrap":
+		for i := startIdx; i < len(call.Args); i++ {
+			if lit, ok := call.Args[i].(*ast.BasicLit); ok {
+				reportIfNonActionable(reporter, lit)
 			}
 		}
-
-		// Good advice patterns (for reference, not enforced):
-		// - "Ensure that..." / "Make sure..."
-		// - "Check that..."
-		// - "Verify..."
-		// - "Try..."
-		// - Contains specific values or paths
+	case "Newf", "Wrapf":
+		// Only inspect string literals inside WithAdvice(...) calls; format
+		// args (including the leading format string at startIdx-1) are not
+		// advice.
+		for i := startIdx; i < len(call.Args); i++ {
+			optCall, ok := call.Args[i].(*ast.CallExpr)
+			if !ok {
+				continue
+			}
+			sel, ok := optCall.Fun.(*ast.SelectorExpr)
+			if !ok || sel.Sel == nil || sel.Sel.Name != "WithAdvice" {
+				continue
+			}
+			for _, adviceArg := range optCall.Args {
+				if lit, ok := adviceArg.(*ast.BasicLit); ok {
+					reportIfNonActionable(reporter, lit)
+				}
+			}
+		}
 	}
+}
+
+// reportIfNonActionable flags advice string literals that match known
+// non-actionable patterns.
+func reportIfNonActionable(reporter *nolint.Reporter, lit *ast.BasicLit) {
+	advice := strings.Trim(lit.Value, `"`)
+	adviceLower := strings.ToLower(advice)
+
+	// Check for non-actionable advice patterns
+	nonActionablePatterns := []string{
+		"see underlying error",
+		"check error",
+		"something went wrong",
+		"an error occurred",
+		"failed",
+		"error:",
+	}
+
+	for _, pattern := range nonActionablePatterns {
+		if strings.Contains(adviceLower, pattern) && len(advice) < 50 {
+			reporter.Reportf(lit.Pos(),
+				"advice %q may not be actionable; provide specific steps the user can take to resolve the issue",
+				advice)
+			return
+		}
+	}
+
+	// Good advice patterns (for reference, not enforced):
+	// - "Ensure that..." / "Make sure..."
+	// - "Check that..."
+	// - "Verify..."
+	// - "Try..."
+	// - Contains specific values or paths
 }
 
 // currentFuncContext tracks context about the current function being analyzed
