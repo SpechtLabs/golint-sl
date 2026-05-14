@@ -74,3 +74,43 @@ func MultipleBadWraps(e error) humane.Error {
 	}
 	return humane.Wrap(e, "second error") // want `humane.Wrap\(\) should include at least one advice string`
 }
+
+// Good: humane.Newf with formatted message and WithAdvice option.
+// The format placeholder %q is NOT advice and must not be flagged.
+func GoodNewf(name string) humane.Error {
+	return humane.Newf("user %q not found", name,
+		humane.WithAdvice("Verify the user exists in the directory"))
+}
+
+// Bad: humane.Newf without any WithAdvice option.
+func BadNewfNoAdvice(name string) humane.Error {
+	return humane.Newf("user %q not found", name) // want `humane.Newf\(\) should include at least one humane.WithAdvice`
+}
+
+// Good: humane.Wrapf with formatted message and WithAdvice option.
+// The format string itself is NOT advice and must not be flagged.
+func GoodWrapf(e error, ref string) humane.Error {
+	return humane.Wrapf(e, "failed to fetch %s", ref,
+		humane.WithAdvice("Verify the Roadie API is reachable"))
+}
+
+// Bad: humane.Wrapf without any WithAdvice option.
+func BadWrapfNoAdvice(e error, ref string) humane.Error {
+	return humane.Wrapf(e, "failed to fetch %s", ref) // want `humane.Wrapf\(\) should include at least one humane.WithAdvice`
+}
+
+// Good: WithAdvice with multiple actionable strings.
+func GoodWrapfMultiAdvice(e error, name string) humane.Error {
+	return humane.Wrapf(e, "config %q invalid", name,
+		humane.WithAdvice(
+			"Verify the YAML is well-formed",
+			"Check the schema against docs/reference",
+		))
+}
+
+// Bad: WithAdvice with a non-actionable string is still flagged via
+// checkAdviceQuality (the advice itself is too vague).
+func BadWrapfVagueAdvice(e error) humane.Error {
+	return humane.Wrapf(e, "operation %s failed", "x",
+		humane.WithAdvice("failed")) // want `advice "failed" may not be actionable`
+}
