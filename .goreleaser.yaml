@@ -144,3 +144,25 @@ signs:
       - "--output-signature=${signature}"
       - "${artifact}"
     artifacts: binary
+
+homebrew_casks:
+  - name: golint-sl
+    ids:
+      - golint-sl
+    repository:
+      owner: SpechtLabs
+      name: homebrew-tap
+      branch: main
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    directory: Casks
+    homepage: "https://github.com/SpechtLabs/golint-sl"
+    description: "SpechtLabs Go linter collection for production code patterns."
+    commit_author:
+      name: goreleaser-bot
+      email: bot@specht-labs.de
+    hooks:
+      post:
+        install: |
+          if OS.mac?
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/golint-sl"]
+          end

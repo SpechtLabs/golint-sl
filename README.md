@@ -50,7 +50,7 @@ linters:
 > **Standalone binary (for quick local testing)**
 >
 > ```bash
-> go install github.com/spechtlabs/golint-sl/cmd/golint-sl@latest
+> brew install spechtlabs/tap/golint-sl
 > golint-sl ./...
 > ```
 >
