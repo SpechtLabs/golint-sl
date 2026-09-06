@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.12](https://github.com/SpechtLabs/golint-sl/compare/v0.1.11...v0.1.12) (2026-09-06)
+
+
+### Bug Fixes
+
+* **deps:** update dependency mermaid to ^11.16.0 ([#70](https://github.com/SpechtLabs/golint-sl/issues/70)) ([3e960da](https://github.com/SpechtLabs/golint-sl/commit/3e960da06a2f013f4e394289c73b52eee1e15d09))
+* **deps:** update dependency mermaid to ^11.16.1 ([#85](https://github.com/SpechtLabs/golint-sl/issues/85)) ([885889b](https://github.com/SpechtLabs/golint-sl/commit/885889bb45ccebc6842bbc5007e558fbfcb31ba4))
+* **deps:** update dependency mermaid to ^11.17.0 ([#94](https://github.com/SpechtLabs/golint-sl/issues/94)) ([cf3c742](https://github.com/SpechtLabs/golint-sl/commit/cf3c742db16eb8ddec0b5681188a738a64c852ac))
+* **deps:** update dependency mermaid to ^11.17.2 ([#99](https://github.com/SpechtLabs/golint-sl/issues/99)) ([ba38003](https://github.com/SpechtLabs/golint-sl/commit/ba380038b0179a82feb6ea8dbe04cb72566d550f))
+* **deps:** update module golang.org/x/tools to v0.45.0 ([#50](https://github.com/SpechtLabs/golint-sl/issues/50)) ([f9201e3](https://github.com/SpechtLabs/golint-sl/commit/f9201e32164af8b907c31434d3ab5ee081293656))
+* **deps:** update module golang.org/x/tools to v0.48.0 ([#62](https://github.com/SpechtLabs/golint-sl/issues/62)) ([da2fe88](https://github.com/SpechtLabs/golint-sl/commit/da2fe883eece5442573202969124e223e8aaedd5))
+* **deps:** update module golang.org/x/tools to v0.49.0 ([#90](https://github.com/SpechtLabs/golint-sl/issues/90)) ([e207e5e](https://github.com/SpechtLabs/golint-sl/commit/e207e5e63f9afc1edb50cac4a07a79e8114474d6))
+
 ## [0.1.11](https://github.com/SpechtLabs/golint-sl/compare/v0.1.10...v0.1.11) (2026-05-14)
 
 
