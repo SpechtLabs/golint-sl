@@ -1,6 +1,6 @@
 module github.com/spechtlabs/golint-sl
 
-go 1.25.5
+go 1.27.1
 
 require (
 	github.com/golangci/plugin-module-register v0.1.2
