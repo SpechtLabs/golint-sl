@@ -169,12 +169,13 @@ jobs:
 
           if [[ "${{ needs.prepare.outputs.is_pr }}" == "true" ]]; then
             # PR builds: Skip Docker entirely
-            yq eval -i 'del(.dockers) | del(.brews)' .goreleaser.yaml
+            yq eval -i 'del(.dockers) | del(.brews) | del(.homebrew_casks)' .goreleaser.yaml
           else
             # Main branch builds: Change image tags to 'main'
             yq eval -i '
               .dockers[0].image_templates = ["ghcr.io/spechtlabs/golint-sl:main"] |
-              del(.brews)
+              del(.brews) |
+              del(.homebrew_casks)
             ' .goreleaser.yaml
           fi
 
