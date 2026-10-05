@@ -20,6 +20,12 @@ This analyzer detects anonymous functions (closures) that are too complex.
 - Maximum nesting depth: 2
 - Maximum captured variables: 5
 
+Blocks are not statements of their own, so an `if` with one statement in its
+body counts as two. Nesting counts `if`, `for`, `switch` and `select` levels,
+including the bodies of `case` clauses and every branch of an `else if` chain.
+A captured variable is a local variable or parameter of an enclosing function
+or closure; package-level variables and struct fields are not captures.
+
 **Exempt Closures:**
 
 - Deferred closures (`defer func() {...}()`)
