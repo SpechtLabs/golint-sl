@@ -17,18 +17,25 @@ This analyzer enforces the philosophy from [loggingsucks.com](https://loggingsuc
 1. **Banned loggers** - logrus, stdlib log, fmt.Print (use zap instead)
 2. **Single event per function** - no scattered logs (consider emitting one wide event)
 3. **Structured fields on log calls** - use `zap.String()`, `zap.Error()`, etc.
-4. **Request context in wide events** - include trace_id, request_id, or span_id
+4. **Request context in wide events** - include trace_id, request_id, or span_id (see [Request Context Fields](#request-context-fields))
 5. **Span attributes when context is available** - use `trace.SpanFromContext(ctx)` and `span.SetAttributes()`
 
 ### Supported Logging Frameworks
 
-- **zap** - `zap.L().Info()`, `zap.L().Error()`, etc.
-- **otelzap** - `otelzap.L().InfoContext()`, `otelzap.L().WithError().ErrorContext()`, etc.
+- **zap** - `zap.L().Info()`, `zap.L().Error()`, the sugared logger's `Infow()`, etc.
+- **otelzap** - `otelzap.L().InfoContext()`, `otelzap.L().WithError().ErrorContext()`, `otelzap.L().Ctx(ctx).Info()`, etc.
+- **log/slog** - `slog.Info()`, `logger.Warn()`, with key-value pairs or `slog.Attr` fields
+
+Log calls are recognized by type, not by name: only methods of these loggers (and the banned logrus and stdlib `log`) count. `http.Error`, gRPC's `status.Error` or a method named `Info` on your own type are not logging.
 
 The analyzer recognizes:
 
-- Context-aware methods (`*Context` suffix) that auto-extract trace context
-- Method chaining (`.WithError()`, `.With()`) that adds structured fields
+- Context-aware methods (`*Context` suffix) and otelzap loggers bound with `Ctx(ctx)`, which auto-extract trace context
+- Method chaining (`.WithError()`, `.With()`) that adds structured fields; `.Named()` and `.WithOptions()` add none
+
+### Request Context Fields
+
+A wide event has request context when one of its fields is named, ignoring case and the separators `_`, `-` and `.`, with one of these names or ends in one: `trace_id`, `span_id`, `request_id`, `req_id`, `correlation_id`, `correlation`, `user_id`, `service`, `traceparent`. So `dd.trace_id`, `http.request_id` and `traceId` count; `id` and `user` don't.
 
 ## Why It Matters
 
@@ -219,8 +226,8 @@ Fields added via method chaining (`.WithError()`, `.With()`, etc.) are recognize
 // OK - WithError adds structured error field
 otelzap.L().WithError(err).ErrorContext(ctx, "operation failed")
 
-// OK - With adds structured fields
-logger.With(zap.String("component", "api")).Info("starting")
+// OK - With adds structured fields, here the request context
+logger.With(zap.String("request_id", req.ID)).Info("starting")
 ```
 
 ### Test Functions

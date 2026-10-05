@@ -17,11 +17,16 @@ package wideevents
 
 import (
 	"go/ast"
+	"go/types"
+	"slices"
+	"strconv"
 	"strings"
+	"unicode"
 
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/analysis/passes/inspect"
 	"golang.org/x/tools/go/ast/inspector"
+	"golang.org/x/tools/go/types/typeutil"
 
 	"github.com/spechtlabs/golint-sl/internal/nolint"
 )
@@ -36,8 +41,10 @@ This analyzer implements the "logging sucks" philosophy (https://loggingsucks.co
    - log.* from stdlib (use zap instead)
    - fmt.Print/Printf/Println (use zap.Debug for dev output)
 
-2. ENFORCES structured logging with zap:
-   - Require structured fields (zap.String, zap.Int, etc.)
+2. ENFORCES structured logging:
+   - Require structured fields (zap.String, zap.Int, etc.; slog attributes
+     or key-value pairs; fields added earlier in the chain with With or
+     WithError)
    - Flag bare string messages without context
    - Suggest using span attributes for tracing
 
@@ -48,7 +55,10 @@ This analyzer implements the "logging sucks" philosophy (https://loggingsucks.co
 
 4. DETECTS anti-patterns:
    - Multiple log statements in a single function (should be one wide event)
-   - Info/Warn/Error logs without request context (trace_id, request_id, user_id)
+   - Info/Warn/Error logs without request context: a field whose name,
+     ignoring case and the separators _ - and ., ends in trace_id, span_id,
+     request_id, req_id, correlation_id, correlation, user_id, service or
+     traceparent
    - Logging inside loops (creates log spam)
    - Functions with context that log but don't set span attributes
 
@@ -56,6 +66,12 @@ This analyzer implements the "logging sucks" philosophy (https://loggingsucks.co
    - zap.Debug for development/troubleshooting
    - Single wide event emission at function end
    - Span attributes for OpenTelemetry integration
+   - *Context methods and otelzap's Ctx(ctx) loggers without explicit
+     request context fields, since they carry the trace context
+
+Log calls are recognized by type: methods of the zap and otelzap loggers,
+and functions and methods of log/slog, stdlib log and logrus. Other
+functions named Info or Error (http.Error, status.Error) are not logging.
 
 The goal: One log line per request per service with all necessary context,
 not scattered log statements throughout your code. When you have a context,
@@ -78,8 +94,20 @@ const (
 	stdlibLogPanicMsg    = "stdlib log is banned; use zap.Panic with structured fields instead"
 )
 
-// zapErrorFunc is the zap field constructor for an error field.
-const zapErrorFunc = "Error"
+// Import paths of the logging packages the analyzer knows.
+const (
+	zapPath         = "go.uber.org/zap"
+	zapcorePath     = "go.uber.org/zap/zapcore"
+	slogPath        = "log/slog"
+	stdlibLogPath   = "log"
+	logrusPath      = "github.com/sirupsen/logrus"
+	otelzapPath     = "github.com/uptrace/opentelemetry-go-extra/otelzap"
+	spechtOtelzap   = "github.com/spechtlabs/go-otel-utils/otelzap"
+	zapErrorFunc    = "Error"
+	errorFieldName  = "error"
+	printfSuffix    = "f"
+	ctxLoggerSuffix = "WithCtx"
+)
 
 // Banned logging patterns - these should not be used
 var bannedLogPatterns = map[string]string{
@@ -114,6 +142,26 @@ var bannedLogPatterns = map[string]string{
 	"fmt.Println": "fmt.Println is not for logging; use zap.Debug for dev output or emit a wide event",
 }
 
+// bannedPackages maps the import path of each package with banned functions
+// to the name bannedLogPatterns uses for it.
+var bannedPackages = map[string]string{
+	logrusPath:    "logrus",
+	stdlibLogPath: "log",
+	"fmt":         "fmt",
+}
+
+// loggerPackages maps the import path of each logging package to whether its
+// package-level functions log (slog.Info, log.Fatal) or only the methods of
+// its logger types do (zap's package-level functions build fields).
+var loggerPackages = map[string]bool{
+	zapPath:       false,
+	otelzapPath:   false,
+	spechtOtelzap: false,
+	slogPath:      true,
+	stdlibLogPath: true,
+	logrusPath:    true,
+}
+
 // Traditional logging methods that should be replaced with wide events
 var traditionalLogMethods = map[string]bool{
 	"Info":         true,
@@ -142,23 +190,19 @@ var allowedDebugMethods = map[string]bool{
 	"DebugContext": true, // otelzap context-aware methods
 }
 
-// Method chaining methods that add fields (otelzap/zap patterns)
-var fieldChainMethods = map[string]bool{
-	"WithError":   true, // otelzap.L().WithError(err)
-	"With":        true, // logger.With(zap.String(...))
-	"WithOptions": true, // logger.WithOptions(...)
-	"Named":       true, // logger.Named("name") - adds logger name as context
-}
-
-// Required context fields for wide events
-var requiredContextFields = []string{
-	"request_id",
-	"trace_id",
-	"span_id",
-	"dd.trace_id",
-	"dd.span_id",
-	"user_id",
+// requestContextFields are the field names that correlate a wide event with
+// a request, normalized by normalizeFieldName. A field counts when its
+// normalized name ends in one of them (dd.trace_id, http.request_id).
+var requestContextFields = []string{
+	"traceid",
+	"spanid",
+	"requestid",
+	"reqid",
+	"correlationid",
+	"correlation",
+	"userid",
 	"service",
+	"traceparent",
 }
 
 // Span-related function names for OpenTelemetry
@@ -173,6 +217,16 @@ var spanSetAttributesMethods = map[string]bool{
 	"SetAttribute":  true, // some APIs use singular
 	"AddEvent":      true, // span events are also valid
 	"SetStatus":     true, // setting status is also valid span usage
+}
+
+// contextAwareMethods are methods that accept context.Context as first argument
+// and automatically extract trace context (trace_id, span_id) from it
+var contextAwareMethods = map[string]bool{
+	"ErrorContext": true, // otelzap context-aware methods
+	"InfoContext":  true,
+	"WarnContext":  true,
+	"DebugContext": true,
+	"FatalContext": true,
 }
 
 // isCLIPackage checks if the package path indicates CLI code where fmt.Print is acceptable
@@ -219,58 +273,76 @@ func run(pass *analysis.Pass) (any, error) {
 			return
 		}
 
-		checkFunction(reporter, fn, isCLI)
+		checkFunction(pass.TypesInfo, reporter, fn, isCLI)
 	})
 
 	return nil, nil
 }
 
-func checkFunction(reporter *nolint.Reporter, fn *ast.FuncDecl, isCLI bool) {
-	var logCalls []*logCallInfo
-	var logsInLoops []*ast.CallExpr
+// funcScan collects what one function body does with loggers and spans.
+type funcScan struct {
+	info              *types.Info
+	reporter          *nolint.Reporter
+	logCalls          []*logCallInfo
+	logsInLoops       []*ast.CallExpr
+	isCLI             bool
+	hasSpanUsage      bool
+	hasSpanAttributes bool
+}
 
-	// Check if function has a context parameter
-	hasContext := functionHasContext(fn)
-	hasSpanUsage := false
-	hasSpanAttributes := false
+// bodyVisitor walks a function body and tells the scan about every call,
+// and whether the call sits inside a loop.
+type bodyVisitor struct {
+	scan   *funcScan
+	inLoop bool
+}
 
-	// Collect all log calls and span usage in the function
-	ast.Inspect(fn.Body, func(n ast.Node) bool {
-		// Track if we're inside a loop
-		switch node := n.(type) {
-		case *ast.ForStmt, *ast.RangeStmt:
-			// Check for log calls inside this loop
-			logsInLoops = append(logsInLoops, logCallsInLoop(node)...)
-			return false // Don't recurse again
+// Visit implements ast.Visitor.
+func (v bodyVisitor) Visit(n ast.Node) ast.Visitor {
+	switch node := n.(type) {
+	case *ast.ForStmt, *ast.RangeStmt:
+		return bodyVisitor{scan: v.scan, inLoop: true}
+	case *ast.CallExpr:
+		v.scan.visitCall(node, v.inLoop)
+	}
+	return v
+}
 
-		case *ast.CallExpr:
-			// Check banned patterns first (skip fmt.Print* in CLI code)
-			checkBannedLogPatterns(reporter, node, isCLI)
+// visitCall records a call: banned loggers are reported wherever they are,
+// span usage counts wherever it is, and log calls inside loops are log spam
+// rather than candidates for the wide event checks.
+func (s *funcScan) visitCall(call *ast.CallExpr, inLoop bool) {
+	checkBannedLogPatterns(s.reporter, s.info, call, s.isCLI)
 
-			// Check for span usage
-			if isSpanFromContextCall(node) {
-				hasSpanUsage = true
-			}
-			if isSpanSetAttributesCall(node) {
-				hasSpanAttributes = true
-			}
+	if isSpanFromContextCall(call) {
+		s.hasSpanUsage = true
+	}
+	if isSpanSetAttributesCall(call) {
+		s.hasSpanAttributes = true
+	}
 
-			// Analyze the log call
-			if info := analyzeLogCall(node); info != nil {
-				logCalls = append(logCalls, info)
-			}
-		}
-		return true
-	})
+	info := analyzeLogCall(s.info, call)
+	switch {
+	case info == nil:
+	case inLoop:
+		s.logsInLoops = append(s.logsInLoops, call)
+	default:
+		s.logCalls = append(s.logCalls, info)
+	}
+}
+
+func checkFunction(info *types.Info, reporter *nolint.Reporter, fn *ast.FuncDecl, isCLI bool) {
+	scan := &funcScan{info: info, reporter: reporter, isCLI: isCLI}
+	ast.Walk(bodyVisitor{scan: scan}, fn.Body)
 
 	// Report logs inside loops
-	for _, call := range logsInLoops {
+	for _, call := range scan.logsInLoops {
 		reporter.Reportf(call.Pos(),
 			"logging inside loop creates log spam; accumulate data and emit one wide event after the loop")
 	}
 
 	// Check for scattered log statements (multiple non-debug logs)
-	nonDebugLogs := countNonDebugLogs(logCalls)
+	nonDebugLogs := countNonDebugLogs(scan.logCalls)
 	if nonDebugLogs > 1 {
 		reporter.Reportf(fn.Pos(),
 			"function has %d log statements; consider emitting a single wide event at the end instead of scattered logs",
@@ -278,22 +350,22 @@ func checkFunction(reporter *nolint.Reporter, fn *ast.FuncDecl, isCLI bool) {
 	}
 
 	// Check each log call for required context
-	for _, info := range logCalls {
-		if !info.isDebug && !info.hasStructuredFields {
-			reporter.Reportf(info.call.Pos(),
+	for _, call := range scan.logCalls {
+		if !call.isDebug && !call.hasStructuredFields {
+			reporter.Reportf(call.call.Pos(),
 				"log call without structured fields; use zap.String(\"field\", value) to add context for wide events")
 		}
 
 		// Check for traditional log methods that should be wide events
-		if info.isTraditionalLog && !info.isDebug {
-			checkWideEventContext(reporter, info)
+		if call.isTraditionalLog && !call.isDebug {
+			checkWideEventContext(reporter, call)
 		}
 	}
 
 	// If function has context and non-debug logs but doesn't use span
 	// attributes, suggest it
-	if hasContext && nonDebugLogs > 0 && !hasSpanAttributes {
-		if !hasSpanUsage {
+	if functionHasContext(fn) && nonDebugLogs > 0 && !scan.hasSpanAttributes {
+		if !scan.hasSpanUsage {
 			reporter.Reportf(fn.Pos(),
 				"function has context.Context but doesn't use span attributes; "+
 					"use span := trace.SpanFromContext(ctx) and span.SetAttributes() for better observability")
@@ -303,18 +375,6 @@ func checkFunction(reporter *nolint.Reporter, fn *ast.FuncDecl, isCLI bool) {
 					"add span.SetAttributes(attribute.String(\"key\", value)) for wide event data")
 		}
 	}
-}
-
-// logCallsInLoop returns the log calls anywhere inside the loop.
-func logCallsInLoop(loop ast.Node) []*ast.CallExpr {
-	var calls []*ast.CallExpr
-	ast.Inspect(loop, func(inner ast.Node) bool {
-		if call, ok := inner.(*ast.CallExpr); ok && analyzeLogCall(call) != nil {
-			calls = append(calls, call)
-		}
-		return true
-	})
-	return calls
 }
 
 // countNonDebugLogs returns how many of the log calls are not debug logs.
@@ -335,203 +395,296 @@ type logCallInfo struct {
 	isDebug             bool
 	isTraditionalLog    bool
 	hasStructuredFields bool
-	hasContextMethod    bool // true if method is *Context (e.g., ErrorContext, InfoContext)
+	hasContextMethod    bool // true if the logger carries the trace context (ErrorContext, otelzap Ctx(ctx))
 }
 
-// contextAwareMethods are methods that accept context.Context as first argument
-// and automatically extract trace context (trace_id, span_id) from it
-var contextAwareMethods = map[string]bool{
-	"ErrorContext": true, // otelzap context-aware methods
-	"InfoContext":  true,
-	"WarnContext":  true,
-	"DebugContext": true,
-	"FatalContext": true,
-}
-
-// zapFieldMethods are methods on the zap package that return zap.Field, not log calls
-var zapFieldMethods = map[string]bool{
-	"String":     true,
-	"Int":        true,
-	"Int64":      true,
-	"Int32":      true,
-	"Float64":    true,
-	"Float32":    true,
-	"Bool":       true,
-	"Duration":   true,
-	"Time":       true,
-	"Error":      true,
-	"NamedError": true,
-	"Any":        true,
-	"Object":     true,
-	"Array":      true,
-	"Binary":     true,
-	"ByteString": true,
-	"Reflect":    true,
-	"Stack":      true,
-	"Stringer":   true,
-	"Uint":       true,
-	"Uint64":     true,
-	"Uint32":     true,
-}
-
-func analyzeLogCall(call *ast.CallExpr) *logCallInfo {
-	sel, ok := call.Fun.(*ast.SelectorExpr)
-	if !ok {
+// analyzeLogCall returns what the analyzer needs to know about call if it is
+// a call to an Info/Warn/Error/Fatal/Debug method or function of a logger,
+// and nil otherwise.
+func analyzeLogCall(info *types.Info, call *ast.CallExpr) *logCallInfo {
+	fn := loggerFunc(info, call)
+	if fn == nil {
 		return nil
 	}
 
-	method := sel.Sel.Name
-
-	// Skip fmt.Errorf/Sprintf - it's error/string construction, not logging
-	if ident, ok := sel.X.(*ast.Ident); ok {
-		if ident.Name == "fmt" && (method == "Errorf" || method == "Sprintf") {
-			return nil
-		}
-		// Skip zap.String(), zap.Error(), etc. - these are field constructors, not log calls
-		if ident.Name == "zap" && zapFieldMethods[method] {
-			return nil
-		}
-	}
-
-	// Only logger.Info(), logger.Error(), etc. are log calls, and only when the
-	// receiver is not known to be something other than a logger
+	method := fn.Name()
 	if !traditionalLogMethods[method] && !allowedDebugMethods[method] {
 		return nil
 	}
-	if isExcludedLogReceiver(sel.X) {
-		return nil
-	}
 
-	// Logger calls must have at least one argument (the message)
-	// err.Error() with no arguments is NOT a log call - it's the error interface method
-	if len(call.Args) == 0 {
-		return nil
-	}
-
-	info := &logCallInfo{
+	logCall := &logCallInfo{
 		call:             call,
 		method:           method,
 		isDebug:          allowedDebugMethods[method],
 		isTraditionalLog: traditionalLogMethods[method],
-		hasContextMethod: contextAwareMethods[method],
+		hasContextMethod: contextAwareMethods[method] || isContextLogger(fn),
 	}
 
-	// Check for structured fields in arguments
-	info.hasStructuredFields, info.fieldNames = hasStructuredFields(call)
+	logCall.hasStructuredFields, logCall.fieldNames = logCallFields(info, fn, call)
 
-	// The receiver could be zap.L().Info(), otelzap.L().WithError(err).ErrorContext(), etc.
-	// If method chaining adds fields, mark as having structured fields
-	if x, ok := sel.X.(*ast.CallExpr); ok && hasFieldChaining(x) {
-		info.hasStructuredFields = true
-		info.fieldNames = append(info.fieldNames, "error") // WithError adds error field
+	// Fields added earlier in the chain count too:
+	// logger.With(zap.String("request_id", id)).Info("handled")
+	if sel, ok := ast.Unparen(call.Fun).(*ast.SelectorExpr); ok {
+		structured, names := chainFields(info, sel.X)
+		logCall.hasStructuredFields = logCall.hasStructuredFields || structured
+		logCall.fieldNames = append(logCall.fieldNames, names...)
 	}
 
-	return info
+	return logCall
 }
 
-// isExcludedLogReceiver reports whether the receiver of a logger-named method
-// is known not to be a logger (fmt, testing.T, errors, test assertion values).
-func isExcludedLogReceiver(recv ast.Expr) bool {
-	switch x := recv.(type) {
-	case *ast.Ident:
-		return isExcludedReceiverName(strings.ToLower(x.Name))
-	case *ast.SelectorExpr:
-		// Could be pkg.Logger or obj.logger, or struct.err.Error()
-		if x.Sel == nil {
-			return false
+// loggerFunc returns the function or method call invokes if it belongs to a
+// logging package: a method of one of its types, or a package-level function
+// of a package whose package-level functions log. It returns nil otherwise.
+func loggerFunc(info *types.Info, call *ast.CallExpr) *types.Func {
+	fn, ok := typeutil.Callee(info, call).(*types.Func)
+	if !ok || fn.Pkg() == nil {
+		return nil
+	}
+
+	pkgFuncsLog, known := loggerPackages[fn.Pkg().Path()]
+	if !known {
+		return nil
+	}
+	if fn.Signature().Recv() == nil && !pkgFuncsLog {
+		return nil
+	}
+	return fn
+}
+
+// isContextLogger reports whether fn is a method of an otelzap logger bound
+// to a context (otelzap.L().Ctx(ctx).Info(...)), which adds the trace
+// context to every event.
+func isContextLogger(fn *types.Func) bool {
+	recv := fn.Signature().Recv()
+	if recv == nil {
+		return false
+	}
+
+	t := recv.Type()
+	if ptr, ok := t.(*types.Pointer); ok {
+		t = ptr.Elem()
+	}
+	named, ok := types.Unalias(t).(*types.Named)
+	if !ok {
+		return false
+	}
+
+	path := named.Obj().Pkg().Path()
+	return (path == otelzapPath || path == spechtOtelzap) && strings.HasSuffix(named.Obj().Name(), ctxLoggerSuffix)
+}
+
+// logCallFields returns whether a log call passes structured fields and the
+// names of those it can determine. Printf-style calls (Infof) and calls
+// without a message parameter (log.Print, the sugared Info) print their
+// arguments rather than attaching them as fields.
+func logCallFields(info *types.Info, fn *types.Func, call *ast.CallExpr) (bool, []string) {
+	if strings.HasSuffix(fn.Name(), printfSuffix) {
+		return false, nil
+	}
+
+	params := fn.Signature().Params()
+	if params.Len() < 2 || !isStringType(params.At(params.Len()-2).Type()) {
+		return false, nil
+	}
+
+	return variadicFields(info, fn, call)
+}
+
+// chainFields returns the fields that calls earlier in a logger chain attach,
+// e.g. the request_id in logger.With(zap.String("request_id", id)).Info(...).
+// Named and WithOptions add no fields.
+func chainFields(info *types.Info, recv ast.Expr) (bool, []string) {
+	structured := false
+	var names []string
+
+	for {
+		call, ok := ast.Unparen(recv).(*ast.CallExpr)
+		if !ok {
+			return structured, names
 		}
-		// Exclude struct fields that are errors (e.g., event.err.Error())
-		fieldName := strings.ToLower(x.Sel.Name)
-		return fieldName == "err" || strings.Contains(fieldName, "error")
+		fn := loggerFunc(info, call)
+		if fn == nil {
+			return structured, names
+		}
+
+		s, n := chainCallFields(info, fn, call)
+		structured = structured || s
+		names = append(names, n...)
+
+		sel, isSel := ast.Unparen(call.Fun).(*ast.SelectorExpr)
+		if !isSel {
+			return structured, names
+		}
+		recv = sel.X
+	}
+}
+
+// chainCallFields returns the fields one call in a logger chain attaches.
+func chainCallFields(info *types.Info, fn *types.Func, call *ast.CallExpr) (bool, []string) {
+	switch fn.Name() {
+	case "With":
+		return variadicFields(info, fn, call)
+	case "WithError":
+		return true, []string{errorFieldName}
+	case "WithField", "WithFields":
+		if len(call.Args) == 0 {
+			return true, nil
+		}
+		if key, ok := stringLiteral(call.Args[0]); ok {
+			return true, []string{key}
+		}
+		return true, nil
+	}
+	return false, nil
+}
+
+// variadicFields reads the structured fields passed in the variadic
+// parameter of a call to fn. A variadic parameter of field type (zap.Field,
+// slog.Attr) holds one field per argument; one of type any holds key-value
+// pairs, which may be mixed with fields (slog, the sugared *w methods).
+func variadicFields(info *types.Info, fn *types.Func, call *ast.CallExpr) (bool, []string) {
+	sig := fn.Signature()
+	if !sig.Variadic() {
+		return false, nil
+	}
+
+	last := sig.Params().Len() - 1
+	if len(call.Args) <= last {
+		return false, nil
+	}
+	args := call.Args[last:]
+
+	slice, ok := sig.Params().At(last).Type().(*types.Slice)
+	if !ok {
+		return false, nil
+	}
+	elem := slice.Elem()
+	fieldParam := isFieldType(elem)
+	if !fieldParam && !types.IsInterface(elem) {
+		return false, nil
+	}
+
+	// A spread slice (logger.Info(msg, fields...)) carries fields whose names
+	// can't be read here.
+	if call.Ellipsis.IsValid() {
+		return true, nil
+	}
+
+	if fieldParam {
+		return fieldArgs(info, args)
+	}
+	return keyValueArgs(info, args)
+}
+
+// fieldArgs reads arguments that are each one field.
+func fieldArgs(info *types.Info, args []ast.Expr) (bool, []string) {
+	var names []string
+	for _, arg := range args {
+		if name, ok := fieldName(info, arg); ok {
+			names = append(names, name)
+		}
+	}
+	return len(args) > 0, names
+}
+
+// keyValueArgs reads alternating keys and values, where a field (zap.Field,
+// slog.Attr) may stand in for a key-value pair.
+func keyValueArgs(info *types.Info, args []ast.Expr) (bool, []string) {
+	structured := false
+	var names []string
+
+	for i := 0; i < len(args); i++ {
+		t := info.TypeOf(args[i])
+		switch {
+		case t != nil && isFieldType(t):
+			structured = true
+			if name, ok := fieldName(info, args[i]); ok {
+				names = append(names, name)
+			}
+		case t != nil && isStringType(t):
+			structured = true
+			if key, ok := stringLiteral(args[i]); ok {
+				names = append(names, key)
+			}
+			i++ // skip the value
+		}
+	}
+	return structured, names
+}
+
+// fieldName returns the key of a field built by a zap or slog constructor
+// with a literal key (zap.String("request_id", id), slog.Int("status", 200));
+// zap.Error(err) is the "error" field.
+func fieldName(info *types.Info, arg ast.Expr) (string, bool) {
+	call, ok := ast.Unparen(arg).(*ast.CallExpr)
+	if !ok {
+		return "", false
+	}
+	fn := typeutil.StaticCallee(info, call)
+	if fn == nil || fn.Pkg() == nil || fn.Signature().Recv() != nil {
+		return "", false
+	}
+
+	switch fn.Pkg().Path() {
+	case zapPath:
+		if fn.Name() == zapErrorFunc {
+			return errorFieldName, true
+		}
+	case slogPath:
+	default:
+		return "", false
+	}
+
+	if len(call.Args) == 0 {
+		return "", false
+	}
+	return stringLiteral(call.Args[0])
+}
+
+// isFieldType reports whether t is a structured logging field: zap.Field
+// (zapcore.Field) or slog.Attr.
+func isFieldType(t types.Type) bool {
+	named, ok := types.Unalias(t).(*types.Named)
+	if !ok || named.Obj().Pkg() == nil {
+		return false
+	}
+
+	switch named.Obj().Pkg().Path() {
+	case zapPath, zapcorePath:
+		return named.Obj().Name() == "Field"
+	case slogPath:
+		return named.Obj().Name() == "Attr"
 	}
 	return false
 }
 
-// isExcludedReceiverName reports whether a lower-cased receiver identifier
-// names something other than a logger.
-func isExcludedReceiverName(name string) bool {
-	switch name {
-	case "fmt", // fmt package - fmt.Errorf is not logging
-		"t", "b", // testing.T methods - t.Errorf is not logging
-		"got", "want", "expected", "actual": // common test assertion variables
-		return true
-	}
-	// Exclude error variables - err.Error(), e.Error(), herr.Error(), lastCause.Error() is not logging
-	return name == "e" || strings.Contains(name, "err") || strings.Contains(name, "cause")
+// isStringType reports whether t's underlying type is string.
+func isStringType(t types.Type) bool {
+	basic, ok := t.Underlying().(*types.Basic)
+	return ok && basic.Kind() == types.String
 }
 
-// hasFieldChaining checks if a call expression has method chaining that adds fields
-// e.g., otelzap.L().WithError(err) or logger.With(zap.String(...))
-func hasFieldChaining(call *ast.CallExpr) bool {
-	// Check if this call is a field-adding method
-	if sel, ok := call.Fun.(*ast.SelectorExpr); ok {
-		methodName := sel.Sel.Name
-		if fieldChainMethods[methodName] {
-			return true
-		}
-		// Recurse into the receiver to check for nested chaining
-		if innerCall, ok := sel.X.(*ast.CallExpr); ok {
-			return hasFieldChaining(innerCall)
-		}
-	}
-	return false
-}
-
-func hasStructuredFields(call *ast.CallExpr) (bool, []string) {
-	var fieldNames []string
-
-	// Skip the first argument (message string)
-	for i, arg := range call.Args {
-		if i == 0 {
-			continue // Skip message
-		}
-
-		// Check for zap.String(), zap.Int(), zap.Error(), etc.
-		if name, ok := zapFieldName(arg); ok {
-			fieldNames = append(fieldNames, name)
-		}
-	}
-
-	return len(fieldNames) > 0, fieldNames
-}
-
-// zapFieldName returns the field name of a zap field constructor call such as
-// zap.String("key", value), if it can be determined.
-func zapFieldName(arg ast.Expr) (string, bool) {
-	argCall, ok := arg.(*ast.CallExpr)
+// stringLiteral returns the value of expr if it is a string literal.
+func stringLiteral(expr ast.Expr) (string, bool) {
+	lit, ok := ast.Unparen(expr).(*ast.BasicLit)
 	if !ok {
 		return "", false
 	}
-	sel, ok := argCall.Fun.(*ast.SelectorExpr)
-	if !ok {
-		return "", false
-	}
-	ident, ok := sel.X.(*ast.Ident)
-	if !ok || ident.Name != "zap" {
-		return "", false
-	}
-
-	// zap.Error() is a special case - the field name is "error"
-	if sel.Sel.Name == zapErrorFunc || sel.Sel.Name == "NamedError" {
-		return "error", true
-	}
-
-	// Extract field name if possible
-	if len(argCall.Args) == 0 {
-		return "", false
-	}
-	lit, ok := argCall.Args[0].(*ast.BasicLit)
-	if !ok {
-		return "", false
-	}
-	return strings.Trim(lit.Value, "\""), true
+	value, err := strconv.Unquote(lit.Value)
+	return value, err == nil
 }
 
-func checkBannedLogPatterns(reporter *nolint.Reporter, call *ast.CallExpr, isCLI bool) {
-	callName := getCallName(call)
-	if callName == "" {
+func checkBannedLogPatterns(reporter *nolint.Reporter, info *types.Info, call *ast.CallExpr, isCLI bool) {
+	fn := typeutil.StaticCallee(info, call)
+	if fn == nil || fn.Pkg() == nil || fn.Signature().Recv() != nil {
 		return
 	}
+	pkgName, ok := bannedPackages[fn.Pkg().Path()]
+	if !ok {
+		return
+	}
+	callName := pkgName + "." + fn.Name()
 
 	// Skip fmt.Print* in CLI code - it's used for user output, not logging
 	if isCLI && (callName == "fmt.Print" || callName == "fmt.Printf" || callName == "fmt.Println") {
@@ -551,42 +704,35 @@ func checkWideEventContext(reporter *nolint.Reporter, info *logCallInfo) {
 		return
 	}
 
-	// Check if the log has any of the required context fields
-	hasContext := false
-	for _, field := range info.fieldNames {
-		fieldLower := strings.ToLower(field)
-		for _, required := range requiredContextFields {
-			if strings.Contains(fieldLower, required) || strings.Contains(required, fieldLower) {
-				hasContext = true
-				break
-			}
-		}
-		// Also check for common alternatives
-		if strings.Contains(fieldLower, "trace") ||
-			strings.Contains(fieldLower, "span") ||
-			strings.Contains(fieldLower, "request") ||
-			strings.Contains(fieldLower, "req_id") ||
-			strings.Contains(fieldLower, "correlation") {
-			hasContext = true
-		}
-	}
-
-	if !hasContext && len(info.fieldNames) > 0 {
+	if len(info.fieldNames) > 0 && !slices.ContainsFunc(info.fieldNames, isRequestContextField) {
 		reporter.Reportf(info.call.Pos(),
 			"wide event missing request context; add trace_id, request_id, or span_id for correlation")
 	}
 }
 
-func getCallName(call *ast.CallExpr) string {
-	switch fn := call.Fun.(type) {
-	case *ast.Ident:
-		return fn.Name
-	case *ast.SelectorExpr:
-		if ident, ok := fn.X.(*ast.Ident); ok {
-			return ident.Name + "." + fn.Sel.Name
+// isRequestContextField reports whether a field name correlates the event
+// with a request: its normalized name ends in one of requestContextFields.
+// "id" or "user" alone do not.
+func isRequestContextField(name string) bool {
+	normalized := normalizeFieldName(name)
+	for _, field := range requestContextFields {
+		if strings.HasSuffix(normalized, field) {
+			return true
 		}
 	}
-	return ""
+	return false
+}
+
+// normalizeFieldName lower-cases name and drops the separators _ - and . so
+// that trace_id, traceId, trace-id and dd.trace.id compare equal.
+func normalizeFieldName(name string) string {
+	return strings.Map(func(r rune) rune {
+		switch r {
+		case '_', '-', '.':
+			return -1
+		}
+		return unicode.ToLower(r)
+	}, name)
 }
 
 // functionHasContext checks if the function has a context.Context parameter
