@@ -115,7 +115,7 @@ func run(pass *analysis.Pass) (any, error) {
 			reporter.Reportf(fn.Pos(),
 				"function %s is %d lines (max %d); %s",
 				fn.Name.Name, lines, errorLimit, advice)
-		} else if lines >= warnLimit {
+		} else {
 			reporter.Reportf(fn.Pos(),
 				"function %s is %d lines (recommended max %d); %s",
 				fn.Name.Name, lines, warnLimit, advice)
@@ -150,7 +150,6 @@ func analyzeFunction(fn *ast.FuncDecl) string {
 	forCount := 0
 	switchCount := 0
 	errCheckCount := 0
-	maxNesting := 0
 
 	ast.Inspect(fn.Body, func(n ast.Node) bool {
 		switch node := n.(type) {
@@ -167,7 +166,7 @@ func analyzeFunction(fn *ast.FuncDecl) string {
 		return true
 	})
 
-	maxNesting = calculateMaxNesting(fn.Body, 0)
+	maxNesting := calculateMaxNesting(fn.Body, 0)
 
 	// Generate specific advice
 	if errCheckCount > 5 {
@@ -218,22 +217,48 @@ func isErrCheck(ifStmt *ast.IfStmt) bool {
 	return false
 }
 
+// calculateMaxNesting returns the deepest nesting of control-flow statements
+// inside node, which sits at depth current. Function literals are skipped.
 func calculateMaxNesting(node ast.Node, current int) int {
 	maxDepth := current
 
 	ast.Inspect(node, func(n ast.Node) bool {
-		switch n.(type) {
-		case *ast.IfStmt, *ast.ForStmt, *ast.RangeStmt,
+		if n == node {
+			return true
+		}
+		switch stmt := n.(type) {
+		case *ast.IfStmt:
+			maxDepth = max(maxDepth, ifNesting(stmt, current+1))
+			return false
+		case *ast.ForStmt, *ast.RangeStmt,
 			*ast.SwitchStmt, *ast.TypeSwitchStmt, *ast.SelectStmt:
-			depth := current + 1
-			if depth > maxDepth {
-				maxDepth = depth
-			}
+			maxDepth = max(maxDepth, calculateMaxNesting(n, current+1))
+			return false
 		case *ast.FuncLit:
 			return false // Don't count nested functions
 		}
 		return true
 	})
+
+	return maxDepth
+}
+
+// ifNesting returns the deepest nesting inside an if statement at depth. An
+// else-if continues the chain at the same depth rather than nesting deeper.
+func ifNesting(stmt *ast.IfStmt, depth int) int {
+	maxDepth := depth
+	if stmt.Init != nil {
+		maxDepth = max(maxDepth, calculateMaxNesting(stmt.Init, depth))
+	}
+	maxDepth = max(maxDepth, calculateMaxNesting(stmt.Cond, depth))
+	maxDepth = max(maxDepth, calculateMaxNesting(stmt.Body, depth))
+
+	switch els := stmt.Else.(type) {
+	case *ast.IfStmt:
+		maxDepth = max(maxDepth, ifNesting(els, depth))
+	case *ast.BlockStmt:
+		maxDepth = max(maxDepth, calculateMaxNesting(els, depth))
+	}
 
 	return maxDepth
 }
