@@ -1,16 +1,21 @@
+# Both hooks build ./custom-gcl from the .custom-gcl.yml at the repository root
+# and run it in every Go module of the repository, so they work with a go.mod
+# at the root, with modules in subdirectories only, or with both. See
+# hooks/golint-sl.sh.
 - id: golint-sl
   name: golint-sl
-  description: Build custom golangci-lint binary with golint-sl and run on all packages
-  entry: bash -c 'golangci-lint custom && ./custom-gcl run ./...'
-  language: system
+  description: Build custom golangci-lint binary with golint-sl and run it on every package of every Go module
+  entry: hooks/golint-sl.sh
+  language: script
   types: [go]
   pass_filenames: false
+  require_serial: true
 
 - id: golint-sl-pkg
   name: golint-sl (per package)
-  description: Build custom golangci-lint binary with golint-sl and run on changed packages
-  entry: bash -c 'golangci-lint custom && ./custom-gcl run'
-  language: system
+  description: Build custom golangci-lint binary with golint-sl and run it on the packages of the changed files
+  entry: hooks/golint-sl.sh --packages
+  language: script
   types: [go]
   pass_filenames: true
   require_serial: true

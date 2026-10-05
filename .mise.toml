@@ -25,7 +25,8 @@ golangci-lint = "2.14.0"
 yamllint = "1.38.0"
 actionlint = "1.7.12"
 # actionlint runs shellcheck on every `run:` script when it's on PATH, and
-# silently skips them when it isn't.
+# silently skips them when it isn't. The shell-lint task checks the pre-commit
+# hook script with it too.
 shellcheck = "0.11.0"
 
 # Release tooling. GoReleaser signs the checksums and the container images
@@ -105,8 +106,8 @@ description = "Check that go.mod and go.sum are tidy"
 run = "go mod tidy -diff"
 
 [tasks.lint]
-description = "Lint the module with golangci-lint and golint-sl, YAML and workflows"
-depends = ["lint-build", "yaml-lint", "actionlint"]
+description = "Lint the module with golangci-lint and golint-sl, YAML, workflows and the hook script"
+depends = ["lint-build", "yaml-lint", "actionlint", "shell-lint"]
 run = [{ task = "go-lint" }]
 
 # go-lint runs a custom-gcl that's already built; CI's cached path calls it
@@ -126,6 +127,10 @@ run = "yamllint --strict ."
 [tasks.actionlint]
 description = "Lint the GitHub Actions workflows"
 run = "actionlint"
+
+[tasks.shell-lint]
+description = "Lint the pre-commit hook script with shellcheck"
+run = "shellcheck hooks/golint-sl.sh"
 
 [tasks.release-check]
 description = "Validate the GoReleaser config"

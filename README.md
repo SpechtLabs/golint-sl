@@ -225,8 +225,10 @@ Available hooks:
 
 | Hook ID | Description |
 |---------|-------------|
-| `golint-sl` | Build custom binary and run all analyzers on `./...` |
-| `golint-sl-pkg` | Build custom binary and run only on changed Go files (faster for large repos) |
+| `golint-sl` | Build custom binary and run all analyzers on every package of every Go module |
+| `golint-sl-pkg` | Build custom binary and run only on the packages of changed Go files (faster for large repos) |
+
+Both hooks lint each Go module of the repository from its own directory, so they also work in repositories with several modules and no `go.mod` at the root.
 
 ## Philosophy
 
