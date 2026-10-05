@@ -60,12 +60,12 @@ func sugared(sugar *zap.SugaredLogger) {
 }
 
 // Bad: structured fields, but none that correlate the event with a request.
-func missingContext(logger *zap.Logger, err error) {
+func missingContext(ctx context.Context, logger *zap.Logger, err error) { // want `function has context.Context but doesn't use span attributes`
 	logger.Error("failed", zap.Error(err)) // want `wide event missing request context; add trace_id, request_id, or span_id`
 }
 
 // Bad: a named error field is still not request context.
-func missingContextNamedError(logger *zap.Logger, err error) {
+func missingContextNamedError(ctx context.Context, logger *zap.Logger, err error) { // want `function has context.Context but doesn't use span attributes`
 	logger.Error("failed", zap.NamedError("cause", err)) // want `wide event missing request context`
 }
 

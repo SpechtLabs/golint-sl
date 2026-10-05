@@ -55,10 +55,12 @@ This analyzer implements the "logging sucks" philosophy (https://loggingsucks.co
 
 4. DETECTS anti-patterns:
    - Multiple log statements in a single function (should be one wide event)
-   - Info/Warn/Error logs without request context: a field whose name,
+   - Info/Warn/Error logs without request context, in a function that takes
+     a context.Context (one that handles a request): a field whose name,
      ignoring case and the separators _ - and ., ends in trace_id, span_id,
      request_id, req_id, correlation_id, correlation, user_id, service or
-     traceparent
+     traceparent. Startup, shutdown and CLI code has no request to correlate
+     with and is not asked for one.
    - Logging inside loops (creates log spam)
    - Functions with context that log but don't set span attributes
 
@@ -332,6 +334,7 @@ func (s *funcScan) visitCall(call *ast.CallExpr, inLoop bool) {
 }
 
 func checkFunction(info *types.Info, reporter *nolint.Reporter, fn *ast.FuncDecl, isCLI bool) {
+	hasCtx := functionHasContext(fn)
 	scan := &funcScan{info: info, reporter: reporter, isCLI: isCLI}
 	ast.Walk(bodyVisitor{scan: scan}, fn.Body)
 
@@ -356,15 +359,17 @@ func checkFunction(info *types.Info, reporter *nolint.Reporter, fn *ast.FuncDecl
 				"log call without structured fields; use zap.String(\"field\", value) to add context for wide events")
 		}
 
-		// Check for traditional log methods that should be wide events
-		if call.isTraditionalLog && !call.isDebug {
+		// Check for traditional log methods that should be wide events. Only a
+		// function that takes a context handles a request; startup, shutdown and
+		// CLI code has no request to correlate with.
+		if call.isTraditionalLog && !call.isDebug && hasCtx {
 			checkWideEventContext(reporter, call)
 		}
 	}
 
 	// If function has context and non-debug logs but doesn't use span
 	// attributes, suggest it
-	if functionHasContext(fn) && nonDebugLogs > 0 && !scan.hasSpanAttributes {
+	if hasCtx && nonDebugLogs > 0 && !scan.hasSpanAttributes {
 		if !scan.hasSpanUsage {
 			reporter.Reportf(fn.Pos(),
 				"function has context.Context but doesn't use span attributes; "+

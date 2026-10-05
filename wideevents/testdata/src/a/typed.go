@@ -71,7 +71,7 @@ func namedOnly(logger *zap.Logger) {
 }
 
 // Bad: With adds a field, but not one that correlates the event.
-func chainedWithoutContext(logger *zap.Logger) {
+func chainedWithoutContext(ctx context.Context, logger *zap.Logger) { // want `function has context.Context but doesn't use span attributes`
 	logger.With(zap.String("component", "api")).Info("handled") // want `wide event missing request context`
 }
 
@@ -112,12 +112,12 @@ func nestedLoops(logger *zap.Logger, rows [][]string) {
 // --- Request context fields ---
 
 // Bad: "id" is not request context, although request_id contains it.
-func idOnly(logger *zap.Logger, id string) {
+func idOnly(ctx context.Context, logger *zap.Logger, id string) { // want `function has context.Context but doesn't use span attributes`
 	logger.Info("done", zap.String("id", id)) // want `wide event missing request context`
 }
 
 // Bad: neither is "user".
-func userOnly(logger *zap.Logger, user string) {
+func userOnly(ctx context.Context, logger *zap.Logger, user string) { // want `function has context.Context but doesn't use span attributes`
 	logger.Info("done", zap.String("user", user)) // want `wide event missing request context`
 }
 
@@ -152,7 +152,7 @@ func slogBare() {
 }
 
 // Bad: slog fields without request context.
-func slogNoContext() {
+func slogNoContext(ctx context.Context) { // want `function has context.Context but doesn't use span attributes`
 	slog.Info("handled", "count", 1) // want `wide event missing request context`
 }
 
@@ -188,4 +188,17 @@ func logrusChain(id, key string) { // want `function has 3 log statements`
 	logrus.WithField("request_id", id).Info("handled")              // want `logrus is banned`
 	logrus.WithField(key, id).Warn("dynamic key")                   // want `logrus is banned`
 	logrus.WithFields(logrus.Fields{"request_id": id}).Info("many") // want `logrus is banned`
+}
+
+// Good: without a context there is no request to correlate with, as in
+// startup, shutdown and CLI code, so fields without request context are fine.
+func shutdownEvent(logger *zap.Logger) {
+	logger.Info("observability shutdown", zap.String("trace_flush", "ok"))
+}
+
+// Good: the same holds for a closure that a function without a context returns.
+func shutdownFunc(logger *zap.Logger) func() {
+	return func() {
+		logger.Info("observability shutdown", zap.String("phase", "flush"))
+	}
 }
