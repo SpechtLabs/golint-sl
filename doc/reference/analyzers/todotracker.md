@@ -14,6 +14,11 @@ Architecture
 
 This analyzer detects TODO and FIXME comments without attribution.
 
+A marker is the upper-case word `TODO` or `FIXME` at the start of a comment
+line, including the continuation lines of a block comment. Words that only
+contain the letters, such as `Mastodon`, lower-case prose, a marker in the
+middle of a sentence and identifiers such as `context.TODO` are left alone.
+
 ## Why It Matters
 
 Anonymous TODOs:
@@ -49,7 +54,6 @@ func Process() {
 // TODO(username): description
 // TODO(username): description - TICKET-123
 // FIXME(username): description
-// HACK(username): description
 ```
 
 ## Why Attribution Matters

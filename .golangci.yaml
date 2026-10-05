@@ -134,14 +134,6 @@ linters:
         text: '^optionspattern: function "AnalyzeOptionPatterns"'
         path: ^optionspattern/
 
-      # todotracker matches TODO and FIXME anywhere in a comment, case
-      # insensitively, so the documentation of the todotracker analyzer itself,
-      # and comments naming context.TODO, read as unowned TODOs.
-      - linters:
-          - golint-sl
-        text: "^todotracker:"
-        path: ^(cmd/golint-sl/main\.go|contextpropagation/analyzer\.go|todotracker/analyzer\.go)$
-
     paths:
       - third_party$
       - builtin$
