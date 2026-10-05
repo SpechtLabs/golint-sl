@@ -1,11 +1,13 @@
-// Package a holds the statusupdate cases. The analyzer is purely syntactic,
-// so a tiny fake client stands in for controller-runtime.
+// Package a holds the statusupdate cases. A tiny fake client with a Status
+// method stands in for controller-runtime.
 package a
 
 import (
 	"context"
+	"kubeutil"
 
 	"k8s.io/apimachinery/pkg/api/meta"
+	"sigs.k8s.io/cluster-api/util/patch"
 )
 
 type Object struct {
@@ -23,6 +25,7 @@ type ObjectStatus struct {
 type StatusWriter struct{}
 
 func (StatusWriter) Update(ctx context.Context, obj *Object) error { return nil }
+func (StatusWriter) Patch(ctx context.Context, obj *Object) error  { return nil }
 
 type Client struct{}
 
@@ -32,6 +35,8 @@ func (Client) Update(ctx context.Context, obj *Object) error { return nil }
 func (Client) Patch(ctx context.Context, obj *Object) error  { return nil }
 func (Client) Delete(ctx context.Context, obj *Object) error { return nil }
 func (Client) Status() StatusWriter                          { return StatusWriter{} }
+
+func (Client) SubResource(name string) StatusWriter { return StatusWriter{} }
 
 type Result struct{}
 
@@ -228,4 +233,134 @@ type SuppressedReconciler struct{ client Client }
 //nolint:statusupdate
 func (r *SuppressedReconciler) Reconcile(ctx context.Context, obj *Object) error {
 	return r.client.Update(ctx, obj)
+}
+
+// Bad: Status fields assigned but persisted with Update on the object, which
+// ignores the status subresource.
+type StatusThenUpdateReconciler struct{ client Client }
+
+func (r *StatusThenUpdateReconciler) Reconcile(ctx context.Context, obj *Object) error { // want `reconciler mutates resources but doesn't update Status`
+	obj.Status.Ready = true
+	return r.client.Update(ctx, obj)
+}
+
+// Bad: the whole Status replaced, then a Patch through an embedded client,
+// whose promoted Status method marks it as a client rather than a patch helper.
+type StatusThenPatchReconciler struct{ Client }
+
+func (r *StatusThenPatchReconciler) Reconcile(ctx context.Context, obj *Object) error { // want `reconciler mutates resources but doesn't update Status`
+	obj.Status = ObjectStatus{Ready: true}
+	return r.Patch(ctx, obj)
+}
+
+// Bad: Status() called, but the write goes to the object.
+type StatusReadReconciler struct{ client Client }
+
+func (r *StatusReadReconciler) Reconcile(ctx context.Context, obj *Object) error { // want `reconciler mutates resources but doesn't update Status`
+	_ = r.client.Status()
+	obj.Status.Ready = true
+	return r.client.Update(ctx, obj)
+}
+
+// Good: the status persisted with Status().Patch().
+type StatusPatchReconciler struct{ client Client }
+
+func (r *StatusPatchReconciler) Reconcile(ctx context.Context, obj *Object) error {
+	if err := r.client.Update(ctx, obj); err != nil {
+		return err
+	}
+	obj.Status.Ready = true
+	return r.client.Status().Patch(ctx, obj)
+}
+
+// Good: the status persisted through SubResource("status").
+type SubResourceReconciler struct{ client Client }
+
+func (r *SubResourceReconciler) Reconcile(ctx context.Context, obj *Object) error {
+	if err := r.client.Create(ctx, obj); err != nil {
+		return err
+	}
+	obj.Status.Ready = true
+	return r.client.SubResource("status").Update(ctx, obj)
+}
+
+// Good: cluster-api's patch helper persists spec and status together.
+type ClusterAPIReconciler struct{ client Client }
+
+func (r *ClusterAPIReconciler) Reconcile(ctx context.Context, obj *Object) error {
+	helper, err := patch.NewHelper(obj, r.client)
+	if err != nil {
+		return err
+	}
+	obj.Status.Ready = true
+	return helper.Patch(ctx, obj)
+}
+
+// Bad: a package-level Patch function is a mutation, not a patch helper.
+type PackagePatchReconciler struct{}
+
+func (r *PackagePatchReconciler) Reconcile(ctx context.Context, obj *Object) error { // want `reconciler mutates resources but doesn't update Status`
+	obj.Status.Ready = true
+	return kubeutil.Patch(ctx, obj)
+}
+
+func writerFor(obj *Object) StatusWriter { return StatusWriter{} }
+
+func (Client) Scale() StatusWriter { return StatusWriter{} }
+
+// Bad: writers for other subresources, or from elsewhere, don't persist the
+// status.
+type OtherWriterReconciler struct{ client Client }
+
+func (r *OtherWriterReconciler) Reconcile(ctx context.Context, obj *Object) error { // want `reconciler mutates resources but doesn't update Status`
+	obj.Status.Ready = true
+	if err := r.client.SubResource("scale").Update(ctx, obj); err != nil {
+		return err
+	}
+	if err := r.client.Scale().Update(ctx, obj); err != nil {
+		return err
+	}
+	return writerFor(obj).Update(ctx, obj)
+}
+
+// Good: the status persisted by a helper method of the reconciler.
+type StatusHelperReconciler struct{ client Client }
+
+func (r *StatusHelperReconciler) Reconcile(ctx context.Context, obj *Object) error {
+	if err := r.client.Update(ctx, obj); err != nil {
+		return err
+	}
+	obj.Status.Ready = true
+	return r.updateStatus(ctx, obj)
+}
+
+func (r *StatusHelperReconciler) updateStatus(ctx context.Context, obj *Object) error {
+	return persistStatus(ctx, r.client, obj)
+}
+
+func persistStatus(ctx context.Context, c Client, obj *Object) error {
+	return c.Status().Patch(ctx, obj)
+}
+
+// Bad: helpers that never write the status, a recursive one among them.
+type RetryReconciler struct {
+	client Client
+	hook   func()
+}
+
+func (r *RetryReconciler) Reconcile(ctx context.Context, obj *Object) error { // want `reconciler mutates resources but doesn't update Status`
+	obj.Status.Ready = true
+	r.hook()
+	externalSync(obj)
+	if err := r.retry(ctx, obj, 3); err != nil {
+		return err
+	}
+	return r.client.Update(ctx, obj)
+}
+
+func (r *RetryReconciler) retry(ctx context.Context, obj *Object, n int) error {
+	if err := r.client.Update(ctx, obj); err != nil && n > 0 {
+		return r.retry(ctx, obj, n-1)
+	}
+	return nil
 }
