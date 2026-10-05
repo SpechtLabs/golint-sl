@@ -11,6 +11,9 @@
 package golintsl
 
 import (
+	"fmt"
+	"slices"
+
 	"github.com/golangci/plugin-module-register/register"
 	"golang.org/x/tools/go/analysis"
 
@@ -32,11 +35,13 @@ type plugin struct {
 	settings Settings
 }
 
-// New creates a new golint-sl plugin instance.
+// New creates a new golint-sl plugin instance. Settings it can't decode, such
+// as a misspelled key, are an error rather than silently ignored: otherwise
+// a typo in disabled-analyzers would run every analyzer it meant to disable.
 func New(conf any) (register.LinterPlugin, error) {
 	s, err := register.DecodeSettings[Settings](conf)
 	if err != nil {
-		return &plugin{}, nil // No settings provided, use defaults
+		return nil, fmt.Errorf("golint-sl settings: %w (the only setting is disabled-analyzers, a list of analyzer names)", err)
 	}
 	return &plugin{settings: s}, nil
 }
@@ -48,9 +53,13 @@ func (p *plugin) BuildAnalyzers() ([]*analysis.Analyzer, error) {
 		return all, nil
 	}
 
-	// Filter out disabled analyzers
+	// Filter out disabled analyzers. A name that matches no analyzer is most
+	// likely a typo, which would leave that analyzer running.
 	disabled := make(map[string]bool)
 	for _, name := range p.settings.DisabledAnalyzers {
+		if !slices.ContainsFunc(all, func(a *analysis.Analyzer) bool { return a.Name == name }) {
+			return nil, fmt.Errorf("golint-sl settings: disabled-analyzers names %q, which is not a golint-sl analyzer", name)
+		}
 		disabled[name] = true
 	}
 
