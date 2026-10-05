@@ -5,6 +5,7 @@ import (
 	"go/parser"
 	"go/token"
 	"go/types"
+	"slices"
 	"testing"
 
 	"golang.org/x/tools/go/analysis"
@@ -108,4 +109,36 @@ func buildSSA(t *testing.T, src string) *ssa.Package {
 		t.Fatal(err)
 	}
 	return pkg
+}
+
+func TestGetAllFunctions(t *testing.T) {
+	tests := []struct {
+		name string
+		src  string
+		want []string
+	}{
+		{
+			name: "functions and methods",
+			src:  "package p\ntype T struct{}\nfunc (T) M() {}\nfunc (*T) P() {}\nfunc f() {}\n",
+			want: []string{"(*p.T).P", "(p.T).M", "p.f", "p.init"},
+		},
+		{
+			name: "type aliases have no methods of their own",
+			src:  "package p\ntype A = int\ntype T struct{}\ntype B = T\nfunc (T) M() {}\n",
+			want: []string{"(p.T).M", "p.init"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var got []string
+			for _, fn := range sideeffects.GetAllFunctions(buildSSA(t, tt.src)) {
+				got = append(got, fn.String())
+			}
+			slices.Sort(got)
+			if !slices.Equal(got, tt.want) {
+				t.Errorf("GetAllFunctions() = %v, want %v", got, tt.want)
+			}
+		})
+	}
 }

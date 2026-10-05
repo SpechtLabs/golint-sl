@@ -444,7 +444,12 @@ func reportLoggedParam(reporter *nolint.Reporter, fn *ssa.Function, param *ssa.P
 
 // appendMethodFuncs appends the SSA functions for the methods of a named type
 func appendMethodFuncs(funcs []*ssa.Function, prog *ssa.Program, typ *ssa.Type) []*ssa.Function {
-	named := typ.Type().(*types.Named)
+	// An alias (type A = int, or type B = T) has no methods of its own; those of
+	// the type it names are collected from that type's own member.
+	named, ok := typ.Type().(*types.Named)
+	if !ok {
+		return funcs
+	}
 	for method := range named.Methods() {
 		if ssaFn := prog.FuncValue(method); ssaFn != nil {
 			funcs = append(funcs, ssaFn)
