@@ -16,8 +16,24 @@ This analyzer detects resources that are opened but not closed:
 
 - HTTP response bodies (`resp.Body`)
 - Files (`os.Open`, `os.Create`)
-- Database connections
-- Network connections
+- Database rows and prepared statements
+- Network connections (`net.Dial`, `net.DialTCP` and the other dial functions)
+- gRPC client connections
+
+A resource counts as closed when its `Close` method is called anywhere in the
+function, including in a `return` statement (`return f.Close()`). A function
+that returns the resource, or a struct literal holding it, hands it to its
+caller and is not reported:
+
+```go
+func openConfig() (*os.File, error) {
+    f, err := os.Open("config")
+    if err != nil {
+        return nil, err
+    }
+    return f, nil  // The caller closes it
+}
+```
 
 ## Why It Matters
 
