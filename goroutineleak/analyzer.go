@@ -10,7 +10,9 @@ package goroutineleak
 
 import (
 	"go/ast"
+	"go/constant"
 	"go/types"
+	"slices"
 	"strings"
 
 	"golang.org/x/tools/go/analysis"
@@ -74,23 +76,28 @@ func run(pass *analysis.Pass) (any, error) {
 
 	nodeFilter := []ast.Node{
 		(*ast.GoStmt)(nil),
-		(*ast.FuncDecl)(nil),
 	}
 
-	// Track if we're in a function that accepts context
-	var currentFuncHasContext bool
-
-	insp.Preorder(nodeFilter, func(n ast.Node) {
-		switch node := n.(type) {
-		case *ast.FuncDecl:
-			currentFuncHasContext = hasContextParam(node)
-
-		case *ast.GoStmt:
-			checkGoroutine(reporter, node, currentFuncHasContext)
+	insp.WithStack(nodeFilter, func(n ast.Node, push bool, stack []ast.Node) bool {
+		if push {
+			checkGoroutine(pass, reporter, n.(*ast.GoStmt), enclosingFuncHasContext(stack))
 		}
+		return true
 	})
 
 	return nil, nil
+}
+
+// enclosingFuncHasContext reports whether the function declaration enclosing
+// the last node of stack takes a context. A go statement outside any function,
+// in a package-level variable initializer, has no context to pass on.
+func enclosingFuncHasContext(stack []ast.Node) bool {
+	for _, n := range slices.Backward(stack) {
+		if fn, ok := n.(*ast.FuncDecl); ok {
+			return hasContextParam(fn)
+		}
+	}
+	return false
 }
 
 func hasContextParam(fn *ast.FuncDecl) bool {
@@ -107,7 +114,7 @@ func hasContextParam(fn *ast.FuncDecl) bool {
 	return false
 }
 
-func checkGoroutine(reporter *nolint.Reporter, goStmt *ast.GoStmt, parentHasContext bool) {
+func checkGoroutine(pass *analysis.Pass, reporter *nolint.Reporter, goStmt *ast.GoStmt, parentHasContext bool) {
 	// Get the function being called in the go statement
 	var funcLit *ast.FuncLit
 	switch call := goStmt.Call.Fun.(type) {
@@ -152,7 +159,7 @@ func checkGoroutine(reporter *nolint.Reporter, goStmt *ast.GoStmt, parentHasCont
 
 		case *ast.ForStmt:
 			// Infinite loop: for { } or for true { }
-			if node.Cond == nil {
+			if node.Cond == nil || isConstantTrue(pass, node.Cond) {
 				hasInfiniteLoop = true
 			}
 
@@ -227,4 +234,11 @@ func getCallName(call *ast.CallExpr) string {
 		return fn.Sel.Name
 	}
 	return ""
+}
+
+// isConstantTrue reports whether expr is a constant that evaluates to true,
+// such as the literal true in "for true { }".
+func isConstantTrue(pass *analysis.Pass, expr ast.Expr) bool {
+	tv, ok := pass.TypesInfo.Types[expr]
+	return ok && tv.Value != nil && tv.Value.Kind() == constant.Bool && constant.BoolVal(tv.Value)
 }
