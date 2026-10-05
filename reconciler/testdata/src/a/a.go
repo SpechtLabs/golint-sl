@@ -125,7 +125,7 @@ func (r *SideEffectReconciler) Reconcile(ctx context.Context, req reconcile.Requ
 	_ = time.Since(time.Time{})
 
 	globalMu.Lock()   // want `reconciler using mutex may indicate shared state; consider using controller-runtime's built-in concurrency model`
-	globalMu.Unlock() // want `reconciler using mutex may indicate shared state`
+	globalMu.Unlock() // reported once per mutex, at the Lock above
 
 	fmt.Printf("%s\n", req.Name) // want `use structured logging \(zap, logr\) instead of fmt.Print\* in reconcilers`
 	fmt.Println(req.Name)        // want `use structured logging \(zap, logr\) instead of fmt.Print\* in reconcilers`

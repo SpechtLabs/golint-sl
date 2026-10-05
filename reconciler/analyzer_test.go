@@ -63,6 +63,16 @@ func TestAnalyzeReconciler(t *testing.T) {
 			want: reconciler.ReconcilerInfo{Name: "Reconcile", HasNotFoundCheck: true},
 		},
 		{
+			name: "IgnoreNotFound counts as a not-found check",
+			src:  `func Reconcile() (ctrl.Result, error) { return ctrl.Result{}, client.IgnoreNotFound(err) }`,
+			want: reconciler.ReconcilerInfo{Name: "Reconcile", HasProperSig: true, HasNotFoundCheck: true},
+		},
+		{
+			name: "a dot-imported IsNotFound counts too",
+			src:  `func Reconcile() { _ = IsNotFound(nil) }`,
+			want: reconciler.ReconcilerInfo{Name: "Reconcile", HasNotFoundCheck: true},
+		},
+		{
 			name: "no body",
 			src:  `func Reconcile() (ctrl.Result, error)`,
 			want: reconciler.ReconcilerInfo{Name: "Reconcile", HasProperSig: true},
