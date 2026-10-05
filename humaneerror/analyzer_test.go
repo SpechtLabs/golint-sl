@@ -20,6 +20,18 @@ func TestHumaneErrorAnalyzerImportAlias(t *testing.T) {
 	analysistest.Run(t, testdata, humaneerror.Analyzer, "b")
 }
 
+// TestHumaneErrorAnalyzerConcurrentPackages analyzes a package of framework
+// callbacks and a package without any side by side, repeatedly. The
+// checker analyzes packages in parallel, so state shared between passes
+// would let the callback exemption of one package suppress diagnostics in
+// the other (and the race detector would flag it).
+func TestHumaneErrorAnalyzerConcurrentPackages(t *testing.T) {
+	testdata := analysistest.TestData()
+	for range 5 {
+		analysistest.Run(t, testdata, humaneerror.Analyzer, "concurrent/callbacks", "concurrent/plain")
+	}
+}
+
 func TestIsHumaneErrorType(t *testing.T) {
 	named := func(pkgPath, name string) types.Type {
 		var pkg *types.Package

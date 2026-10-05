@@ -15,6 +15,7 @@ import (
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/analysis/passes/inspect"
 	"golang.org/x/tools/go/ast/inspector"
+	"golang.org/x/tools/go/types/typeutil"
 
 	"github.com/spechtlabs/golint-sl/internal/nolint"
 )
@@ -156,50 +157,45 @@ func run(pass *analysis.Pass) (any, error) {
 	insp := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
 
 	// Track imports to understand package aliases
-	imports := make(map[string]string) // path -> local name
+	var imports map[string]string // path -> local name
 
 	nodeFilter := []ast.Node{
 		(*ast.File)(nil),
 		(*ast.FuncDecl)(nil),
 		(*ast.CallExpr)(nil),
-		(*ast.ReturnStmt)(nil),
 	}
 
-	insp.Preorder(nodeFilter, func(n ast.Node) {
-		switch node := n.(type) {
+	for cur := range insp.Root().Preorder(nodeFilter...) {
+		switch node := cur.Node().(type) {
 		case *ast.File:
-			// Reset imports for each file
-			imports = make(map[string]string)
-			for _, imp := range node.Imports {
-				path := strings.Trim(imp.Path.Value, `"`)
-				name := ""
-				if imp.Name != nil {
-					name = imp.Name.Name
-				} else {
-					// Use last component of path as default name
-					parts := strings.Split(path, "/")
-					name = parts[len(parts)-1]
-				}
-				imports[path] = name
-			}
+			imports = fileImports(node)
 
 		case *ast.FuncDecl:
-			// Track current function context for nested checks
-			if node.Name != nil {
-				currentFunc = funcContext{
-					name:                 node.Name.Name,
-					mustReturnPlainError: isFrameworkCallback(node.Name.Name),
-				}
-			}
 			checkFuncReturnsHumaneError(reporter, node, imports)
 
 		case *ast.CallExpr:
 			checkHumaneCallHasAdvice(reporter, node, imports)
-			checkForbiddenErrorCalls(reporter, node, imports)
+			checkForbiddenErrorCalls(pass, reporter, node, inFrameworkCallback(cur))
 		}
-	})
+	}
 
 	return nil, nil
+}
+
+// fileImports maps the import path of every import in f to its local name.
+func fileImports(f *ast.File) map[string]string {
+	imports := make(map[string]string, len(f.Imports))
+	for _, imp := range f.Imports {
+		path := strings.Trim(imp.Path.Value, `"`)
+		if imp.Name != nil {
+			imports[path] = imp.Name.Name
+			continue
+		}
+		// Use last component of path as default name
+		parts := strings.Split(path, "/")
+		imports[path] = parts[len(parts)-1]
+	}
+	return imports
 }
 
 // checkFuncReturnsHumaneError verifies that exported functions returning error
@@ -485,43 +481,40 @@ func reportIfNonActionable(reporter *nolint.Reporter, lit *ast.BasicLit) {
 	// - Contains specific values or paths
 }
 
-// currentFuncContext tracks context about the current function being analyzed
-type funcContext struct {
-	name                 string
-	mustReturnPlainError bool
+// inFrameworkCallback reports whether the node at cur sits inside a function
+// declaration whose name marks it as a framework callback. Code outside any
+// function declaration (package-level variables) is never inside one.
+func inFrameworkCallback(cur inspector.Cursor) bool {
+	for c := cur; c.Node() != nil; c = c.Parent() {
+		if fn, ok := c.Node().(*ast.FuncDecl); ok {
+			return isFrameworkCallback(fn.Name.Name)
+		}
+	}
+	return false
 }
-
-var currentFunc funcContext
 
 // checkForbiddenErrorCalls flags direct use of errors.New and fmt.Errorf
 // but exempts framework callbacks where plain error is required
-func checkForbiddenErrorCalls(reporter *nolint.Reporter, call *ast.CallExpr, _ map[string]string) {
-	sel, ok := call.Fun.(*ast.SelectorExpr)
-	if !ok {
+func checkForbiddenErrorCalls(pass *analysis.Pass, reporter *nolint.Reporter, call *ast.CallExpr, inCallback bool) {
+	fn := typeutil.StaticCallee(pass.TypesInfo, call)
+	if fn == nil || fn.Pkg() == nil || fn.Signature().Recv() != nil {
 		return
 	}
 
-	ident, ok := sel.X.(*ast.Ident)
-	if !ok {
-		return
-	}
-
-	funcName := sel.Sel.Name
-
-	// Check for errors.New - still flag these even in callbacks
-	// because you should at least wrap with context
-	if ident.Name == "errors" && funcName == "New" {
-		// Allow in test files implicitly (they often use errors.New for test cases)
+	switch fn.Pkg().Path() + "." + fn.Name() {
+	case "errors.New":
+		// Still flagged inside callbacks: a callback can at least wrap
+		// with context.
 		reporter.Reportf(call.Pos(),
 			"avoid errors.New(); use humane.New(message, advice...) to provide actionable guidance")
-	}
 
-	// Check for fmt.Errorf - allow in framework callbacks
-	// Allow fmt.Errorf in functions that must return plain error
-	// (framework callbacks, interface implementations)
-	if ident.Name == "fmt" && funcName == "Errorf" && !currentFunc.mustReturnPlainError {
-		reporter.Reportf(call.Pos(),
-			"avoid fmt.Errorf(); use humane.Wrap(err, message, advice...) or humane.New(message, advice...) instead")
+	case "fmt.Errorf":
+		// Allowed in functions that must return plain error (framework
+		// callbacks, interface implementations).
+		if !inCallback {
+			reporter.Reportf(call.Pos(),
+				"avoid fmt.Errorf(); use humane.Wrap(err, message, advice...) or humane.New(message, advice...) instead")
+		}
 	}
 }
 
