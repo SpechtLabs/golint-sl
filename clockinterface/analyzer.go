@@ -15,10 +15,13 @@ import (
 	"go/ast"
 	"go/types"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/analysis/passes/inspect"
 	"golang.org/x/tools/go/ast/inspector"
+	"golang.org/x/tools/go/types/typeutil"
 
 	"github.com/spechtlabs/golint-sl/internal/nolint"
 )
@@ -57,7 +60,10 @@ var Analyzer = &analysis.Analyzer{
 	Run:      run,
 }
 
-// ExemptPackages are packages where time.Now is acceptable
+// ExemptPackages are package names (not paths) where time.Now is acceptable.
+// An entry starting with an underscore matches as a suffix of the name, so
+// "_test" covers every external test package; any other entry has to match
+// the whole name.
 var ExemptPackages = []string{
 	"main",  // Entry points are fine
 	"_test", // Test files are fine
@@ -75,21 +81,26 @@ var ExemptPackagePaths = []string{
 	"/terminal/", // Terminal utilities
 }
 
-// ExemptFunctions are function names where time.Now is acceptable
+// ExemptFunctions are function names where time.Now is acceptable. A function
+// is exempt when its name is an entry, or an entry followed by a new
+// camel-case word: NewService and FormatAge are exempt, Newsletter and
+// initializeCache are not.
 var ExemptFunctions = []string{
 	"main",
 	"init",
-	"New",    // Constructors often set default clocks
-	"Format", // Formatting functions
-	"Print",  // Print functions
-	"String", // String conversion functions
+	"New",     // Constructors often set default clocks
+	"Format",  // Formatting functions
+	"Print",   // Print functions
+	"Printf",  // Print functions
+	"Println", // Print functions
+	"String",  // String conversion functions
 }
 
 func run(pass *analysis.Pass) (any, error) {
 	reporter := nolint.NewReporter(pass)
 	insp := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
 
-	if isExemptPackage(pass.Pkg.Path()) {
+	if isExemptPackage(pass.Pkg.Name(), pass.Pkg.Path()) {
 		return nil, nil
 	}
 
@@ -118,14 +129,15 @@ func run(pass *analysis.Pass) (any, error) {
 			return
 		}
 
-		// Check function body for time calls
-		if fn.Body == nil {
+		// Check function body for time calls; test files are exempt like
+		// external test packages are
+		if fn.Body == nil || strings.HasSuffix(pass.Fset.Position(fn.Pos()).Filename, "_test.go") {
 			return
 		}
 
 		ast.Inspect(fn.Body, func(n ast.Node) bool {
 			if call, ok := n.(*ast.CallExpr); ok {
-				checkTimeCall(reporter, call, hasClockInterface)
+				checkTimeCall(pass, reporter, call, hasClockInterface)
 			}
 			return true
 		})
@@ -134,10 +146,11 @@ func run(pass *analysis.Pass) (any, error) {
 	return nil, nil
 }
 
-// isExemptPackage reports whether time.Now is acceptable in the package at pkgPath.
-func isExemptPackage(pkgPath string) bool {
+// isExemptPackage reports whether time.Now is acceptable in the package named
+// pkgName at pkgPath.
+func isExemptPackage(pkgName, pkgPath string) bool {
 	for _, exempt := range ExemptPackages {
-		if strings.HasSuffix(pkgPath, exempt) || strings.Contains(pkgPath, exempt+"/") {
+		if pkgName == exempt || (strings.HasPrefix(exempt, "_") && strings.HasSuffix(pkgName, exempt)) {
 			return true
 		}
 	}
@@ -166,7 +179,12 @@ func isExemptFunction(fn *ast.FuncDecl) bool {
 		return false
 	}
 	for _, exempt := range ExemptFunctions {
-		if strings.HasPrefix(fn.Name.Name, exempt) {
+		rest, ok := strings.CutPrefix(fn.Name.Name, exempt)
+		if !ok {
+			continue
+		}
+		// The prefix has to be a whole camel-case word: NewService, not Newsletter
+		if r, _ := utf8.DecodeRuneInString(rest); rest == "" || unicode.IsUpper(r) {
 			return true
 		}
 	}
@@ -174,18 +192,10 @@ func isExemptFunction(fn *ast.FuncDecl) bool {
 }
 
 // checkTimeCall reports call if it is a direct call into the time package.
-func checkTimeCall(reporter *nolint.Reporter, call *ast.CallExpr, hasClockInterface bool) {
-	sel, ok := call.Fun.(*ast.SelectorExpr)
-	if !ok {
-		return
-	}
+func checkTimeCall(pass *analysis.Pass, reporter *nolint.Reporter, call *ast.CallExpr, hasClockInterface bool) {
+	name := timeFuncName(pass, call)
 
-	ident, ok := sel.X.(*ast.Ident)
-	if !ok || ident.Name != "time" {
-		return
-	}
-
-	switch sel.Sel.Name {
+	switch name {
 	case "Now":
 		suggestion := "inject a Clock interface for testability"
 		if hasClockInterface {
@@ -210,8 +220,22 @@ func checkTimeCall(reporter *nolint.Reporter, call *ast.CallExpr, hasClockInterf
 	case "NewTicker", "NewTimer":
 		reporter.Reportf(call.Pos(),
 			"direct time.%s() call; consider abstracting time operations for testability",
-			sel.Sel.Name)
+			name)
 	}
+}
+
+// timeFuncName returns the name of the package-level time function call
+// invokes, however the time package was imported, or "" when call is not a
+// call to one. Methods such as time.Time.After are not package functions.
+func timeFuncName(pass *analysis.Pass, call *ast.CallExpr) string {
+	fn, ok := typeutil.Callee(pass.TypesInfo, call).(*types.Func)
+	if !ok || fn.Pkg() == nil || fn.Pkg().Path() != "time" {
+		return ""
+	}
+	if sig, ok := fn.Type().(*types.Signature); !ok || sig.Recv() != nil {
+		return ""
+	}
+	return fn.Name()
 }
 
 // hasClockParameter checks if a function has a Clock parameter
@@ -273,15 +297,11 @@ func AnalyzeClockPattern(pass *analysis.Pass) *ClockPatternInfo {
 			}
 
 		case *ast.CallExpr:
-			if sel, ok := node.Fun.(*ast.SelectorExpr); ok {
-				if ident, ok := sel.X.(*ast.Ident); ok && ident.Name == "time" {
-					switch sel.Sel.Name {
-					case "Now":
-						info.DirectTimeNowCalls++
-					case "After":
-						info.DirectTimeAfterCalls++
-					}
-				}
+			switch timeFuncName(pass, node) {
+			case "Now":
+				info.DirectTimeNowCalls++
+			case "After":
+				info.DirectTimeAfterCalls++
 			}
 		}
 	})
