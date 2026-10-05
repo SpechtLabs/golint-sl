@@ -259,3 +259,71 @@ func sixErrChecks() error { // want `function "sixErrChecks" has 6 error checks;
 	}
 	return nil
 }
+
+// Bad: a chain of four branches is one chain, reported once at its head and
+// not again at the else-if that starts its three-branch tail.
+func chainFour(x int) int {
+	if x > 100 { // want `if-else chain with 4 branches; consider using early returns to flatten`
+		return 100
+	} else if x > 10 {
+		return 10
+	} else if x > 0 {
+		return 1
+	} else {
+		return 0
+	}
+}
+
+// Good: an else-if belongs to the chain of its head, which does not end in
+// return, so the else-if is not measured as a chain of its own.
+func chainTailReturns(x int) int {
+	y := 0
+	if x > 100 {
+		y = 100
+	} else if x > 10 {
+		return 10
+	} else if x > 0 {
+		y = 1
+	} else {
+		y = -1
+	}
+	return y
+}
+
+type item struct{ Active bool }
+
+func (item) Expired() bool { return false }
+
+var itemCache = map[string]item{}
+
+// Bad: the Doc's bad pattern, nested four deep.
+func activeItems(ids []string) ([]item, error) { // want `function "activeItems" has nesting depth of 4 \(max 3\)`
+	var items []item
+	for _, id := range ids {
+		if it, ok := itemCache[id]; ok {
+			if it.Active { // want `nested if statements could be combined with && operator`
+				if it.Expired() {
+					return nil, nil
+				}
+				items = append(items, it)
+			}
+		}
+	}
+	return items, nil
+}
+
+// Good: the Doc's good pattern.
+func activeItemsFlat(ids []string) ([]item, error) {
+	var items []item
+	for _, id := range ids {
+		it, ok := itemCache[id]
+		if !ok || !it.Active {
+			continue
+		}
+		if it.Expired() {
+			return nil, nil
+		}
+		items = append(items, it)
+	}
+	return items, nil
+}
