@@ -2,7 +2,7 @@ package a
 
 import "strings"
 
-// Second file without interfaces: mock bookkeeping skips it.
+// Second file without interfaces or dependencies.
 
 var separator = strings.Repeat("-", 3)
 

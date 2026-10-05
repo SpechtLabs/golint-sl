@@ -1,12 +1,11 @@
 // Package interfaceconsistency provides an analyzer that enforces interface-driven design
-// patterns, ensuring all major components are accessed through interfaces and that
-// mock implementations exist for testing.
+// patterns: a package's components depend on each other through interfaces, and
+// dependencies are injected rather than created where they are used.
 package interfaceconsistency
 
 import (
 	"go/ast"
 	"go/types"
-	"path/filepath"
 	"strings"
 
 	"golang.org/x/tools/go/analysis"
@@ -19,13 +18,21 @@ import (
 // Doc is the analyzer's documentation.
 const Doc = `enforce interface-driven design patterns
 
-This analyzer ensures:
-1. Struct fields of interface type (for dependency injection)
-2. Exported interfaces have corresponding mock implementations in mock/ subdirectory
-3. Constructor functions return interfaces, not concrete types
-4. Dependencies are injected, not created internally
+This analyzer reports:
+1. Struct fields whose name contains a dependency word (Client, Service,
+   Repository, Store, Provider, Handler, Resolver, Middleware) and whose type
+   is a pointer to a concrete type declared in the same package. Such a field
+   should have an interface type, so tests can substitute the dependency.
+   Fields with a json tag are data (DTOs, CRDs, API types), not dependencies,
+   and are skipped.
+2. Calls to a New* function whose name contains one of those words from a
+   function that is not itself a constructor: the dependency is created
+   where it is used instead of being injected. Test files, main packages
+   (the composition root) and NewTest* helpers are exempt.
 
-Interface-driven design enables testability and loose coupling.`
+Constructors are free to return concrete types ("accept interfaces, return
+structs"; see the returninterface analyzer). Interface-driven design enables
+testability and loose coupling.`
 
 // Analyzer reports code that depends on concrete types where interfaces are expected.
 var Analyzer = &analysis.Analyzer{
@@ -47,43 +54,16 @@ var shouldBeInterfacePatterns = []string{
 	"Middleware",
 }
 
-// Patterns for types that should be defined as interfaces
-var shouldDefineInterfacePatterns = []string{
-	"client",
-	"service",
-	"repository",
-	"store",
-}
-
 func run(pass *analysis.Pass) (any, error) {
 	reporter := nolint.NewReporter(pass)
 	insp := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
-
-	// Track interfaces and their implementations
-	interfaces := make(map[string]*ast.TypeSpec)
-	structs := make(map[string]*ast.TypeSpec)
+	isMainPkg := pass.Pkg.Name() == "main"
 
 	nodeFilter := []ast.Node{
 		(*ast.TypeSpec)(nil),
 		(*ast.FuncDecl)(nil),
 	}
 
-	// First pass: collect all interfaces and structs
-	insp.Preorder(nodeFilter, func(n ast.Node) {
-		ts, ok := n.(*ast.TypeSpec)
-		if !ok {
-			return
-		}
-
-		switch ts.Type.(type) {
-		case *ast.InterfaceType:
-			interfaces[ts.Name.Name] = ts
-		case *ast.StructType:
-			structs[ts.Name.Name] = ts
-		}
-	})
-
-	// Second pass: analyze usage
 	insp.Preorder(nodeFilter, func(n ast.Node) {
 		switch node := n.(type) {
 		case *ast.TypeSpec:
@@ -92,18 +72,11 @@ func run(pass *analysis.Pass) (any, error) {
 			}
 
 		case *ast.FuncDecl:
-			// Check if this function is in a test file
 			filename := pass.Fset.Position(node.Pos()).Filename
 			isTestFile := strings.HasSuffix(filename, "_test.go")
-			isMainPkg := pass.Pkg.Name() == "main"
-
-			checkConstructorReturnsInterface(reporter, node, interfaces)
 			checkDependencyInjection(reporter, node, isTestFile, isMainPkg)
 		}
 	})
-
-	// Check for missing mock implementations
-	checkMockImplementations(pass, interfaces)
 
 	return nil, nil
 }
@@ -121,43 +94,49 @@ func checkStructFieldsUseInterfaces(reporter *nolint.Reporter, pass *analysis.Pa
 			continue
 		}
 
-		for _, name := range field.Names {
-			checkDependencyField(reporter, pass, ts, field, name.Name)
-		}
-	}
-}
-
-// checkDependencyField reports a field named like a dependency that holds a concrete pointer type
-func checkDependencyField(reporter *nolint.Reporter, pass *analysis.Pass, ts *ast.TypeSpec, field *ast.Field, fieldName string) {
-	// Check if this field looks like a dependency
-	for _, pattern := range shouldBeInterfacePatterns {
-		if !strings.Contains(fieldName, pattern) && !strings.HasSuffix(fieldName, pattern) {
+		if !isLocalConcretePointer(pass, field.Type) {
 			continue
 		}
 
-		if isConcretePointerType(pass, field.Type) {
+		for _, name := range field.Names {
+			if !isDependencyName(name.Name) {
+				continue
+			}
 			reporter.Reportf(field.Pos(),
 				"field %q in struct %q looks like a dependency; consider using an interface type instead of concrete type for better testability",
-				fieldName, ts.Name.Name)
+				name.Name, ts.Name.Name)
 		}
 	}
 }
 
-// isConcretePointerType checks if an AST expression is a pointer to a named non-interface type
-func isConcretePointerType(pass *analysis.Pass, expr ast.Expr) bool {
-	// Check if the type is already an interface
-	if isInterfaceType(pass, expr) {
-		return false
+// isDependencyName reports whether name contains a dependency word. A name
+// containing several (ServiceClient) is still one dependency.
+func isDependencyName(name string) bool {
+	for _, pattern := range shouldBeInterfacePatterns {
+		if strings.Contains(name, pattern) {
+			return true
+		}
 	}
+	return false
+}
 
-	// Only report for pointer types to concrete structs
-	star, ok := expr.(*ast.StarExpr)
+// isLocalConcretePointer reports whether expr's type is a pointer to a named
+// non-interface type declared in the package under analysis. Pointers to other
+// packages' types (*http.Client, *sql.DB) are the usual way to hold those and
+// are not reported.
+func isLocalConcretePointer(pass *analysis.Pass, expr ast.Expr) bool {
+	ptr, ok := types.Unalias(pass.TypesInfo.TypeOf(expr)).(*types.Pointer)
 	if !ok {
 		return false
 	}
 
-	_, ok = star.X.(*ast.Ident)
-	return ok
+	named, ok := types.Unalias(ptr.Elem()).(*types.Named)
+	if !ok || named.Obj().Pkg() != pass.Pkg {
+		return false
+	}
+
+	_, isInterface := named.Underlying().(*types.Interface)
+	return !isInterface
 }
 
 // hasJSONTag returns true if the field has a `json:` struct tag.
@@ -166,70 +145,6 @@ func hasJSONTag(field *ast.Field) bool {
 		return false
 	}
 	return strings.Contains(field.Tag.Value, `json:`)
-}
-
-// isInterfaceType checks if an AST expression represents an interface type
-func isInterfaceType(pass *analysis.Pass, expr ast.Expr) bool {
-	t := pass.TypesInfo.TypeOf(expr)
-	if t == nil {
-		return false
-	}
-
-	// Check if it's an interface type
-	_, isInterface := t.Underlying().(*types.Interface)
-	return isInterface
-}
-
-// checkConstructorReturnsInterface ensures New* functions return interfaces when appropriate
-func checkConstructorReturnsInterface(reporter *nolint.Reporter, fn *ast.FuncDecl, interfaces map[string]*ast.TypeSpec) {
-	if fn.Name == nil {
-		return
-	}
-
-	name := fn.Name.Name
-	if !strings.HasPrefix(name, "New") {
-		return
-	}
-
-	if fn.Type.Results == nil || len(fn.Type.Results.List) == 0 {
-		return
-	}
-
-	// Get the type name being constructed
-	typeName := strings.TrimPrefix(name, "New")
-
-	// Check if there's a corresponding interface
-	interfaceName := typeName
-	possibleInterfaceNames := []string{
-		typeName,
-		typeName + "Interface",
-		"I" + typeName,
-	}
-
-	hasInterface := false
-	for _, ifaceName := range possibleInterfaceNames {
-		if _, exists := interfaces[ifaceName]; exists {
-			hasInterface = true
-			interfaceName = ifaceName
-			break
-		}
-	}
-
-	if !hasInterface {
-		return // No interface defined, that's a separate concern
-	}
-
-	// Check if the return type is the interface
-	for _, result := range fn.Type.Results.List {
-		resultType := types.ExprString(result.Type)
-
-		// If returning concrete type instead of interface
-		if strings.Contains(resultType, "*"+typeName) && !strings.Contains(resultType, interfaceName) {
-			reporter.Reportf(fn.Pos(),
-				"constructor %q returns concrete type; consider returning interface %q for better abstraction",
-				name, interfaceName)
-		}
-	}
 }
 
 // checkDependencyInjection ensures dependencies are injected, not created internally
@@ -260,7 +175,6 @@ func checkDependencyInjection(reporter *nolint.Reporter, fn *ast.FuncDecl, isTes
 			return true
 		}
 
-		// Check if this is a New* call
 		var funcName string
 		switch f := call.Fun.(type) {
 		case *ast.Ident:
@@ -269,94 +183,14 @@ func checkDependencyInjection(reporter *nolint.Reporter, fn *ast.FuncDecl, isTes
 			funcName = f.Sel.Name
 		}
 
-		if strings.HasPrefix(funcName, "New") && !strings.HasPrefix(funcName, "NewTest") {
-			// Check if this is creating a service/client/repository
-			for _, pattern := range shouldBeInterfacePatterns {
-				if strings.Contains(funcName, pattern) {
-					reporter.Reportf(call.Pos(),
-						"creating %s inside function; consider injecting it as a dependency for better testability",
-						funcName)
-				}
-			}
+		if strings.HasPrefix(funcName, "New") && !strings.HasPrefix(funcName, "NewTest") && isDependencyName(funcName) {
+			reporter.Reportf(call.Pos(),
+				"creating %s inside function; consider injecting it as a dependency for better testability",
+				funcName)
 		}
 
 		return true
 	})
-}
-
-// checkMockImplementations ensures interfaces have corresponding mocks
-func checkMockImplementations(pass *analysis.Pass, interfaces map[string]*ast.TypeSpec) {
-	// Get the current package path
-	pkgPath := pass.Pkg.Path()
-
-	// Skip mock packages themselves
-	if strings.HasSuffix(pkgPath, "/mock") || strings.Contains(pkgPath, "/mock/") {
-		return
-	}
-
-	// Skip test files
-	for _, f := range pass.Files {
-		filename := pass.Fset.Position(f.Pos()).Filename
-		if strings.HasSuffix(filename, "_test.go") {
-			continue
-		}
-
-		checkFileMockImplementations(f, filename, interfaces)
-	}
-}
-
-// checkFileMockImplementations checks the exported interfaces declared in one file for mocks
-func checkFileMockImplementations(f *ast.File, filename string, interfaces map[string]*ast.TypeSpec) {
-	// For each exported interface, check if a mock exists
-	for name, iface := range interfaces {
-		if !ast.IsExported(name) {
-			continue
-		}
-
-		// Check if this file contains the interface
-		if !fileContainsInterface(f, name) {
-			continue
-		}
-
-		// Expected mock file would be in mock/ subdirectory
-		dir := filepath.Dir(filename)
-		expectedMockFile := filepath.Join(dir, "mock", strings.ToLower(name)+".go")
-
-		// We can't check file existence in the analyzer, but we can suggest
-		// This is more of a documentation/reminder
-		_ = expectedMockFile
-		_ = iface
-
-		// Report if the interface is significant enough to warrant a mock
-		for _, pattern := range shouldDefineInterfacePatterns {
-			if strings.Contains(strings.ToLower(name), pattern) {
-				// This is just informational - we'd need actual file checking
-				// to know if mock exists
-				break
-			}
-		}
-	}
-}
-
-func fileContainsInterface(f *ast.File, name string) bool {
-	for _, decl := range f.Decls {
-		genDecl, ok := decl.(*ast.GenDecl)
-		if !ok {
-			continue
-		}
-
-		for _, spec := range genDecl.Specs {
-			ts, ok := spec.(*ast.TypeSpec)
-			if !ok || ts.Name.Name != name {
-				continue
-			}
-
-			if _, ok := ts.Type.(*ast.InterfaceType); ok {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 // InterfaceInfo contains information about interface usage in a package

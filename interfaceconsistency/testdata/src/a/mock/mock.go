@@ -1,4 +1,4 @@
-// Package mock holds mock implementations; mock bookkeeping skips it.
+// Package mock holds mock implementations.
 package mock
 
 // MockClient is an exported interface in a mock package.
