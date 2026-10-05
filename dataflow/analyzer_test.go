@@ -1,7 +1,6 @@
 package dataflow_test
 
 import (
-	"fmt"
 	"testing"
 
 	"golang.org/x/tools/go/analysis"
@@ -13,11 +12,12 @@ import (
 
 func TestDataflowAnalyzer(t *testing.T) {
 	testdata := analysistest.TestData()
-	analysistest.Run(t, testdata, dataflow.Analyzer, "a")
+	analysistest.Run(t, testdata, dataflow.Analyzer, "a", "example.com/catalog")
 }
 
 // taintAnalyzer drives the exported TaintAnalysis API: every parameter named
-// "tainted" is a source, and each distinct sink it reaches is reported once.
+// "tainted" is a source, and every recorded sink is reported, so a sink
+// recorded twice shows up as an unexpected diagnostic.
 var taintAnalyzer = &analysis.Analyzer{
 	Name:     "tainttest",
 	Doc:      "test wrapper around dataflow.TaintAnalysis",
@@ -36,13 +36,7 @@ var taintAnalyzer = &analysis.Analyzer{
 		}
 		ta.Propagate()
 
-		seen := make(map[string]bool)
 		for _, sink := range ta.Sinks {
-			key := fmt.Sprintf("%d %s %s", sink.Call.Pos(), sink.SinkType, sink.Source)
-			if seen[key] {
-				continue
-			}
-			seen[key] = true
 			pass.Reportf(sink.Call.Pos(), "%s sink reached from %s", sink.SinkType, sink.Source)
 		}
 		return nil, nil

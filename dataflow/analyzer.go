@@ -1,11 +1,15 @@
 // Package dataflow provides SSA-based data flow analysis for detecting:
 // - Sensitive data leaks (passwords, tokens flowing to logs)
-// - Unvalidated input reaching dangerous sinks
 // - Context propagation issues
+//
+// It also exports a small taint tracker (TaintAnalysis) for tracing values
+// to dangerous sinks.
 package dataflow
 
 import (
+	"cmp"
 	"go/types"
+	"slices"
 	"strings"
 
 	"golang.org/x/tools/go/analysis"
@@ -19,10 +23,10 @@ import (
 const Doc = `track data flow using SSA to detect security issues
 
 This analyzer uses SSA to trace how values flow through the program:
-1. Sensitive data (passwords, tokens, secrets) should not flow to logs
-2. User input should be validated before reaching dangerous operations
-3. Context should be propagated correctly through the call chain
-4. Errors should be wrapped, not discarded
+1. Sensitive parameters (passwords, tokens, secrets) should not flow to
+   logging or printing functions, directly or as variadic arguments
+2. A function that has a context should pass one to callees whose first
+   parameter is a context
 
 SSA analysis provides more accurate flow tracking than AST alone.`
 
@@ -52,6 +56,29 @@ var DangerousSinks = []string{
 	"sql.Query", "sql.Exec", // SQL injection risk
 }
 
+// loggingPathSegments are import path elements that mark a logging package:
+// log, log/slog, go.uber.org/zap, github.com/sirupsen/logrus,
+// github.com/rs/zerolog and the like, or a project's own logging package.
+var loggingPathSegments = map[string]bool{
+	"log":     true,
+	"slog":    true,
+	"logging": true,
+	"logger":  true,
+	"zap":     true,
+	"logrus":  true,
+	"zerolog": true,
+	"logr":    true,
+	"klog":    true,
+	"otelzap": true,
+}
+
+// fmtPrintFunctions are the fmt functions that write their arguments out.
+// Sprint, Sprintf, Sprintln and Errorf only build values.
+var fmtPrintFunctions = map[string]bool{
+	"Print": true, "Printf": true, "Println": true,
+	"Fprint": true, "Fprintf": true, "Fprintln": true,
+}
+
 func run(pass *analysis.Pass) (any, error) {
 	reporter := nolint.NewReporter(pass)
 	ssaInfo := pass.ResultOf[buildssa.Analyzer].(*buildssa.SSA)
@@ -62,9 +89,6 @@ func run(pass *analysis.Pass) (any, error) {
 
 		// Check for context propagation
 		checkContextPropagation(reporter, fn)
-
-		// Check for error handling
-		checkErrorFlow(fn)
 	}
 
 	return nil, nil
@@ -120,33 +144,43 @@ func traceToSinks(value ssa.Value, visited map[ssa.Value]bool) []ssa.Instruction
 	}
 
 	for _, ref := range *refs {
-		// If this is a call instruction, it's a potential sink
-		if call, ok := ref.(*ssa.Call); ok {
-			sinks = append(sinks, call)
-		}
-
-		// If it produces a new value, trace that too
-		if instr, ok := ref.(ssa.Value); ok {
+		switch instr := ref.(type) {
+		case *ssa.Call:
+			// A call is a potential sink, and its result is traced further
+			sinks = append(sinks, instr)
 			sinks = append(sinks, traceToSinks(instr, visited)...)
-		}
-
-		// Handle phi nodes (merge points in control flow)
-		if phi, ok := ref.(*ssa.Phi); ok {
-			sinks = append(sinks, traceToSinks(phi, visited)...)
-		}
-
-		// Handle field access
-		if field, ok := ref.(*ssa.FieldAddr); ok {
-			sinks = append(sinks, traceToSinks(field, visited)...)
-		}
-
-		// Handle type assertions
-		if assert, ok := ref.(*ssa.TypeAssert); ok {
-			sinks = append(sinks, traceToSinks(assert, visited)...)
+		case ssa.Value:
+			// Any other instruction that produces a value (conversions, phi
+			// nodes, field access, type assertions) carries the value on
+			sinks = append(sinks, traceToSinks(instr, visited)...)
+		case *ssa.Store:
+			// Storing the value into an element of a local array is how
+			// variadic arguments (fmt.Println(password)) and slice literals
+			// are built; the array then flows on as a slice
+			if array := storedArray(instr, value); array != nil {
+				sinks = append(sinks, traceToSinks(array, visited)...)
+			}
 		}
 	}
 
 	return sinks
+}
+
+// storedArray returns the local array that store writes value into an element
+// of, or nil when store does something else.
+func storedArray(store *ssa.Store, value ssa.Value) *ssa.Alloc {
+	if store.Val != value {
+		return nil
+	}
+	elem, ok := store.Addr.(*ssa.IndexAddr)
+	if !ok {
+		return nil
+	}
+	alloc, ok := elem.X.(*ssa.Alloc)
+	if !ok {
+		return nil
+	}
+	return alloc
 }
 
 // isLoggingOrPrintFunction checks if a function is for logging/printing
@@ -156,24 +190,20 @@ func isLoggingOrPrintFunction(fn *ssa.Function) bool {
 	}
 
 	pkgPath := fn.Pkg.Pkg.Path()
-	fullName := pkgPath + "." + fn.Name()
-
-	// Check common logging packages
-	loggingIndicators := []string{
-		"log", "zap", "logrus", "zerolog",
-		"fmt.Print", "fmt.Fprint", "fmt.Sprint",
+	if pkgPath == "fmt" {
+		return fmtPrintFunctions[fn.Name()]
 	}
+	return isLoggingPackage(pkgPath)
+}
 
-	for _, indicator := range loggingIndicators {
-		if strings.Contains(fullName, indicator) {
-			// Exclude string formatting that returns strings
-			if fn.Name() == "Sprintf" || fn.Name() == "Sprint" {
-				return false
-			}
+// isLoggingPackage reports whether one of pkgPath's elements names a logging
+// package. Whole elements only: catalog and dialog are not logging packages.
+func isLoggingPackage(pkgPath string) bool {
+	for segment := range strings.SplitSeq(pkgPath, "/") {
+		if loggingPathSegments[segment] {
 			return true
 		}
 	}
-
 	return false
 }
 
@@ -245,33 +275,15 @@ func calleeExpectsContext(fn *ssa.Function) bool {
 	return isContextType(firstParam.Type())
 }
 
-// checkErrorFlow ensures errors are handled properly, not discarded
-// This is a lighter check - the standard errcheck linter handles most cases
-func checkErrorFlow(fn *ssa.Function) {
-	// Skip this check - errcheck from golangci-lint handles error checking better
-	// and has proper understanding of deferred calls, type assertions, etc.
-	// This function is kept for documentation/future enhancement
-
-	// If you want to enable strict error checking, uncomment the code below
-	// and customize for your needs
-
-	/*
-		for _, block := range fn.Blocks {
-			for _, instr := range block.Instrs {
-				call, ok := instr.(*ssa.Call)
-				if !ok {
-					continue
-				}
-				// ... error checking logic
-			}
-		}
-	*/
-}
-
 // TaintAnalysis performs taint tracking from sources to sinks
 type TaintAnalysis struct {
 	Sources map[ssa.Value]string // value -> source description
-	Sinks   []TaintSink
+
+	// recorded holds the sinks already in Sinks, so a call reached from the
+	// same source along several paths is recorded once
+	recorded map[sinkKey]bool
+
+	Sinks []TaintSink
 }
 
 // TaintSink represents a location where tainted data reached
@@ -279,6 +291,12 @@ type TaintSink struct {
 	Call     *ssa.Call
 	Source   string
 	SinkType string
+}
+
+// sinkKey identifies a recorded sink.
+type sinkKey struct {
+	call   *ssa.Call
+	source string
 }
 
 // NewTaintAnalysis creates a new taint analysis tracker
@@ -293,36 +311,46 @@ func (t *TaintAnalysis) MarkSource(value ssa.Value, source string) {
 	t.Sources[value] = source
 }
 
-// Propagate traces taint through the program
+// Propagate traces taint through the program. Every tainted value is visited
+// once, and each call is recorded as a sink at most once per source. A value
+// reachable from several sources is attributed to the first one in order of
+// source description and position, so the result does not depend on map
+// iteration order.
 func (t *TaintAnalysis) Propagate() {
-	// Iterate until fixpoint
-	changed := true
-	for changed {
-		changed = false
+	worklist := make([]ssa.Value, 0, len(t.Sources))
+	for value := range t.Sources {
+		worklist = append(worklist, value)
+	}
+	slices.SortFunc(worklist, func(a, b ssa.Value) int {
+		return cmp.Or(
+			strings.Compare(t.Sources[a], t.Sources[b]),
+			cmp.Compare(a.Pos(), b.Pos()),
+			strings.Compare(a.Name(), b.Name()),
+		)
+	})
 
-		for value, source := range t.Sources {
-			if t.propagateFrom(value, source) {
-				changed = true
-			}
-		}
+	for len(worklist) > 0 {
+		value := worklist[0]
+		worklist = worklist[1:]
+		worklist = append(worklist, t.propagateFrom(value, t.Sources[value])...)
 	}
 }
 
 // propagateFrom taints the values that value's referrers produce and records
-// the sinks it reaches; it reports whether a new value was tainted
-func (t *TaintAnalysis) propagateFrom(value ssa.Value, source string) bool {
+// the sinks it reaches; it returns the values it newly tainted
+func (t *TaintAnalysis) propagateFrom(value ssa.Value, source string) []ssa.Value {
 	refs := value.Referrers()
 	if refs == nil {
-		return false
+		return nil
 	}
 
-	changed := false
+	var tainted []ssa.Value
 	for _, ref := range *refs {
 		// If this instruction produces a new value, it's also tainted
 		if newVal, ok := ref.(ssa.Value); ok {
 			if _, exists := t.Sources[newVal]; !exists {
 				t.Sources[newVal] = source
-				changed = true
+				tainted = append(tainted, newVal)
 			}
 		}
 
@@ -332,10 +360,11 @@ func (t *TaintAnalysis) propagateFrom(value ssa.Value, source string) bool {
 		}
 	}
 
-	return changed
+	return tainted
 }
 
-// recordSink records call as a sink of source if its callee is a dangerous sink
+// recordSink records call as a sink of source if its callee is a dangerous
+// sink and it isn't recorded yet
 func (t *TaintAnalysis) recordSink(call *ssa.Call, source string) {
 	callee := call.Call.StaticCallee()
 	if callee == nil {
@@ -346,6 +375,15 @@ func (t *TaintAnalysis) recordSink(call *ssa.Call, source string) {
 	if sinkType == "" {
 		return
 	}
+
+	key := sinkKey{call: call, source: source}
+	if t.recorded[key] {
+		return
+	}
+	if t.recorded == nil {
+		t.recorded = make(map[sinkKey]bool)
+	}
+	t.recorded[key] = true
 
 	t.Sinks = append(t.Sinks, TaintSink{
 		Call:     call,
@@ -364,18 +402,19 @@ func categorizeSink(fn *ssa.Function) string {
 	name := fn.Name()
 
 	// Logging sinks
-	if strings.Contains(pkgPath, "log") || strings.Contains(pkgPath, "zap") {
+	if isLoggingPackage(pkgPath) {
 		return "logging"
+	}
+
+	// SQL sinks (potential injection), before the generic Exec check below
+	// so (*sql.DB).Exec is a query, not a command
+	if strings.Contains(pkgPath, "sql") && (name == "Query" || name == "Exec") {
+		return "sql_query"
 	}
 
 	// Execution sinks
 	if pkgPath == "os/exec" || name == "Exec" {
 		return "command_execution"
-	}
-
-	// SQL sinks (potential injection)
-	if strings.Contains(pkgPath, "sql") && (name == "Query" || name == "Exec") {
-		return "sql_query"
 	}
 
 	// File sinks
