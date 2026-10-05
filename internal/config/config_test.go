@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"golang.org/x/tools/go/analysis"
@@ -116,6 +117,20 @@ func TestIsEnabled(t *testing.T) {
 			analyzer:    "other",
 			wantEnabled: false,
 		},
+		{
+			name:        "nil analyzers map enables all",
+			config:      &Config{},
+			analyzer:    "any",
+			wantEnabled: true,
+		},
+		{
+			name: "enabled when neither the analyzer nor default is set",
+			config: &Config{
+				Analyzers: map[string]bool{"someother": false},
+			},
+			analyzer:    "any",
+			wantEnabled: true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -157,3 +172,149 @@ func TestLoadFrom(t *testing.T) {
 		t.Errorf("todotracker = %v, want false", cfg.Analyzers["todotracker"])
 	}
 }
+
+func TestLoadFromCases(t *testing.T) {
+	tests := []struct {
+		name    string
+		content *string // nil: the file does not exist
+		want    map[string]bool
+		wantErr bool
+	}{
+		{
+			name:    "missing file",
+			content: nil,
+			wantErr: true,
+		},
+		{
+			name:    "invalid yaml",
+			content: ptr("analyzers: [unclosed"),
+			wantErr: true,
+		},
+		{
+			name:    "wrong type for analyzers",
+			content: ptr("analyzers: yes\n"),
+			wantErr: true,
+		},
+		{
+			name:    "empty file yields the default config",
+			content: ptr(""),
+			want:    map[string]bool{"default": true},
+		},
+		{
+			name:    "no analyzers key yields the default config",
+			content: ptr("something-else: 1\n"),
+			want:    map[string]bool{"default": true},
+		},
+		{
+			name:    "analyzers are read as given",
+			content: ptr("analyzers:\n  default: false\n  nilcheck: true\n"),
+			want:    map[string]bool{"default": false, "nilcheck": true},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), ConfigFileName)
+			if tt.content != nil {
+				if err := os.WriteFile(path, []byte(*tt.content), 0o600); err != nil {
+					t.Fatalf("write config: %v", err)
+				}
+			}
+
+			cfg, err := LoadFrom(path)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("LoadFrom() = %+v, want an error", cfg)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("LoadFrom() error = %v", err)
+			}
+			if !reflect.DeepEqual(cfg.Analyzers, tt.want) {
+				t.Errorf("Analyzers = %v, want %v", cfg.Analyzers, tt.want)
+			}
+		})
+	}
+}
+
+func TestLoad(t *testing.T) {
+	tests := []struct {
+		name string
+		// configDir is where the config file is written, relative to the
+		// temp root; empty means no config file.
+		configDir string
+		content   string
+		// workDir is the working directory, relative to the temp root.
+		workDir string
+		want    map[string]bool
+		wantErr bool
+	}{
+		{
+			name:    "no config file anywhere yields the default config",
+			workDir: "project/sub",
+			want:    map[string]bool{"default": true},
+		},
+		{
+			name:      "config file in the working directory",
+			configDir: "project",
+			content:   "analyzers:\n  nilcheck: false\n",
+			workDir:   "project",
+			want:      map[string]bool{"nilcheck": false},
+		},
+		{
+			name:      "config file in a parent directory",
+			configDir: "project",
+			content:   "analyzers:\n  default: false\n",
+			workDir:   "project/sub/deeper",
+			want:      map[string]bool{"default": false},
+		},
+		{
+			name:      "nearest config file wins",
+			configDir: "project/sub",
+			content:   "analyzers:\n  todotracker: false\n",
+			workDir:   "project/sub",
+			want:      map[string]bool{"todotracker": false},
+		},
+		{
+			name:      "invalid config file is an error",
+			configDir: "project",
+			content:   "analyzers: [unclosed",
+			workDir:   "project/sub",
+			wantErr:   true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			workDir := filepath.Join(root, tt.workDir)
+			if err := os.MkdirAll(workDir, 0o750); err != nil {
+				t.Fatalf("mkdir: %v", err)
+			}
+			if tt.configDir != "" {
+				path := filepath.Join(root, tt.configDir, ConfigFileName)
+				if err := os.WriteFile(path, []byte(tt.content), 0o600); err != nil {
+					t.Fatalf("write config: %v", err)
+				}
+			}
+			t.Chdir(workDir)
+
+			cfg, err := Load()
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("Load() = %+v, want an error", cfg)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Load() error = %v", err)
+			}
+			if !reflect.DeepEqual(cfg.Analyzers, tt.want) {
+				t.Errorf("Analyzers = %v, want %v", cfg.Analyzers, tt.want)
+			}
+		})
+	}
+}
+
+func ptr(s string) *string { return &s }

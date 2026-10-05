@@ -114,3 +114,92 @@ func BadWrapfVagueAdvice(e error) humane.Error {
 	return humane.Wrapf(e, "operation %s failed", "x",
 		humane.WithAdvice("failed")) // want `advice "failed" may not be actionable`
 }
+
+// --- Exemptions for exported functions ---
+
+// Good: exported functions without results are not checked.
+func NoResults() {}
+
+// Good: Benchmark* functions are skipped like Test* functions.
+func BenchmarkSomething() error {
+	return nil
+}
+
+// Writer implements io.Writer.
+type Writer struct{}
+
+// Good: methods implementing stdlib interfaces must return plain error.
+func (w *Writer) Write(p []byte) (int, error) {
+	return len(p), nil
+}
+
+// Good: standalone functions with a stdlib interface method name are exempt
+// too, and fmt.Errorf is allowed inside them.
+func Close() error {
+	return fmt.Errorf("closing: %w", errClosed)
+}
+
+// --- Framework callbacks may use fmt.Errorf ---
+
+// Good: functions whose name matches a callback pattern may use fmt.Errorf.
+func requestHandler() error {
+	return fmt.Errorf("handling: %w", errClosed)
+}
+
+// Bad: errors.New is flagged even inside framework callbacks.
+var errClosed = errors.New("closed") // want `avoid errors.New\(\); use humane.New`
+
+// --- Calls the analyzer ignores ---
+
+type options struct {
+	adv adviser
+}
+
+type adviser struct{}
+
+func (adviser) WithAdvice(advice ...string) humane.Option { return nil }
+
+func describe(s string) string { return s }
+
+// Good: plain function calls and calls on non-identifier receivers are not
+// humane constructors.
+func plainCalls(o options) {
+	_ = describe("x")
+	_ = o.adv.WithAdvice("not a humane call")
+}
+
+// Bad: the advice check is syntactic; WithAdvice options that are not called
+// on the humane package identifier (here a struct field and a local
+// variable) do not count, and other calls in the format args are not advice.
+func NewfWithForeignOptions(o options, name string) humane.Error {
+	adv := o.adv
+	return humane.Newf("user %q not found", describe(name), fmt.Sprint(name), o.adv.WithAdvice("x"), adv.WithAdvice("y"), name) // want `humane.Newf\(\) should include at least one humane.WithAdvice`
+}
+
+// Bad: humane.Wrapf with fewer than two arguments has no room for advice.
+func WrapfTooFewArgs(e error) humane.Error {
+	return humane.Wrapf(e, "failed") // want `humane.Wrapf\(\) should include at least one humane.WithAdvice`
+}
+
+// Bad: non-actionable advice in humane.New.
+func NewVagueAdvice() humane.Error {
+	return humane.New("db unreachable", "check error") // want `advice "check error" may not be actionable`
+}
+
+// Good: long advice is accepted even if it contains a vague phrase.
+func NewLongAdvice() humane.Error {
+	return humane.New("db unreachable", "If the connection failed, verify that DATABASE_URL points at a running server")
+}
+
+// --- nolint suppression ---
+
+// Good: diagnostics silenced by nolint directives.
+func Suppressed() error { //nolint:humaneerror
+	_ = errors.New("inline") //nolint:humaneerror
+
+	//nolint:golint-sl
+	_ = errors.New("preceding line")
+
+	_ = errors.New("other analyzer") //nolint:wideevents // want `avoid errors.New\(\); use humane.New`
+	return nil
+}
