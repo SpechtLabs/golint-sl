@@ -16,3 +16,7 @@ func Debug(args ...any) {}
 
 func WithField(key string, value any) *Entry { return &Entry{} }
 func WithFields(fields Fields) *Entry        { return &Entry{} }
+
+func New() *Logger { return &Logger{} }
+
+func (l *Logger) Info(args ...any) {}
