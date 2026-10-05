@@ -75,43 +75,42 @@ func run(pass *analysis.Pass) (any, error) {
 	reporter := nolint.NewReporter(pass)
 	insp := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
 
-	// Track which functions are at package level (init, etc.)
-	var currentFunc *ast.FuncDecl
-	var inTestFile bool
+	for cur := range insp.Root().Preorder((*ast.CallExpr)(nil)) {
+		call := cur.Node().(*ast.CallExpr)
 
-	nodeFilter := []ast.Node{
-		(*ast.File)(nil),
-		(*ast.FuncDecl)(nil),
-		(*ast.CallExpr)(nil),
-	}
-
-	insp.Preorder(nodeFilter, func(n ast.Node) {
-		switch node := n.(type) {
-		case *ast.File:
-			filename := pass.Fset.Position(node.Pos()).Filename
-			inTestFile = strings.HasSuffix(filename, "_test.go")
-
-		case *ast.FuncDecl:
-			currentFunc = node
-
-		case *ast.CallExpr:
-			if inTestFile {
-				return
-			}
-
-			// Skip main function - one-off errors are acceptable
-			if currentFunc != nil && currentFunc.Name.Name == "main" {
-				return
-			}
-
-			checkErrorsNew(reporter, node, currentFunc)
+		if strings.HasSuffix(pass.Fset.Position(call.Pos()).Filename, "_test.go") {
+			continue
 		}
-	})
+
+		// A call outside every function declaration belongs to a
+		// package-level declaration, which is where sentinel errors live.
+		funcDecl := enclosingFuncDecl(cur)
+		if funcDecl == nil {
+			continue
+		}
+
+		// Skip main function - one-off errors are acceptable
+		if funcDecl.Name.Name == "main" {
+			continue
+		}
+
+		checkErrorsNew(reporter, call, funcDecl)
+	}
 
 	return nil, nil
 }
 
-func checkErrorsNew(reporter *nolint.Reporter, call *ast.CallExpr, currentFunc *ast.FuncDecl) {
+// enclosingFuncDecl returns the function declaration that contains cur, or
+// nil when cur is part of a package-level declaration.
+func enclosingFuncDecl(cur inspector.Cursor) *ast.FuncDecl {
+	for c := range cur.Enclosing((*ast.FuncDecl)(nil)) {
+		return c.Node().(*ast.FuncDecl)
+	}
+
+	return nil
+}
+
+func checkErrorsNew(reporter *nolint.Reporter, call *ast.CallExpr, funcDecl *ast.FuncDecl) {
 	// Check if this is errors.New()
 	selector, ok := call.Fun.(*ast.SelectorExpr)
 	if !ok {
@@ -125,7 +124,7 @@ func checkErrorsNew(reporter *nolint.Reporter, call *ast.CallExpr, currentFunc *
 
 	// Check for errors.New()
 	if pkgIdent.Name == "errors" && selector.Sel.Name == "New" {
-		checkInlineErrorsNew(reporter, call, currentFunc)
+		checkInlineErrorsNew(reporter, call, funcDecl)
 	}
 
 	// Also check for fmt.Errorf without %w (not wrapping an error)
@@ -135,12 +134,7 @@ func checkErrorsNew(reporter *nolint.Reporter, call *ast.CallExpr, currentFunc *
 }
 
 // checkInlineErrorsNew reports an errors.New() call made inside a function body
-func checkInlineErrorsNew(reporter *nolint.Reporter, call *ast.CallExpr, currentFunc *ast.FuncDecl) {
-	// Check if this is at package level (var declaration) - that's fine
-	if isPackageLevelVar(call) {
-		return
-	}
-
+func checkInlineErrorsNew(reporter *nolint.Reporter, call *ast.CallExpr, funcDecl *ast.FuncDecl) {
 	// Check if the error message is dynamic (contains variables)
 	if len(call.Args) > 0 && hasVariableContent(call.Args[0]) {
 		reporter.Reportf(call.Pos(),
@@ -148,14 +142,9 @@ func checkInlineErrorsNew(reporter *nolint.Reporter, call *ast.CallExpr, current
 		return
 	}
 
-	funcName := ""
-	if currentFunc != nil {
-		funcName = currentFunc.Name.Name
-	}
-
 	reporter.Reportf(call.Pos(),
 		"inline errors.New() in function %q; define a package-level sentinel error (var Err... = errors.New(...)) for better error handling with errors.Is()",
-		funcName)
+		funcDecl.Name.Name)
 }
 
 // checkUnwrappedErrorf reports an fmt.Errorf() call with a constant message and no %w verb
@@ -167,18 +156,6 @@ func checkUnwrappedErrorf(reporter *nolint.Reporter, call *ast.CallExpr) {
 		reporter.Reportf(call.Pos(),
 			"fmt.Errorf() without %%w verb and no formatting; use humane.New(message, advice...) or define a sentinel error")
 	}
-}
-
-func isPackageLevelVar(call *ast.CallExpr) bool {
-	_ = call // Used for potential future enhancement
-	// Check if this call is in a var declaration at package level
-	// This is complex to determine from the call alone
-	// For now, we use a heuristic: check if we're in a function
-	// If not in a function, it's package level
-
-	// This would need more sophisticated scope analysis
-	// For now, we'll rely on the currentFunc check in the caller
-	return false
 }
 
 func hasVariableContent(expr ast.Expr) bool {
