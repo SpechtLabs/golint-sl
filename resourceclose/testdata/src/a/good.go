@@ -2,6 +2,7 @@ package a
 
 import (
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"testing"
@@ -171,3 +172,65 @@ func suppressed() {
 
 // Good: a function declared without a body (implemented elsewhere) is skipped.
 func external() *os.File
+
+type fileParser struct{ f *os.File }
+
+// Good: the close is the return value.
+func closeInReturn(data []byte) error {
+	f, err := os.Create("out")
+	if err != nil {
+		return err
+	}
+	_, _ = f.Write(data)
+	return f.Close()
+}
+
+// Good: returning the resource hands it to the caller.
+func openConfig() (*os.File, error) {
+	f, err := os.Open("config")
+	if err != nil {
+		return nil, err
+	}
+	return f, nil
+}
+
+// Good: returning a struct literal that holds the resource hands it to the
+// caller.
+func newFileParser(path string) (*fileParser, error) {
+	f, err := os.Open(path)
+	return &fileParser{f: f}, err
+}
+
+// Good: returning the response body hands it to the caller.
+func fetch(url string) (any, error) {
+	resp, err := http.Get(url)
+	if err != nil {
+		return nil, err
+	}
+	return (resp.Body), nil
+}
+
+// Good: a resource assigned to a named result is returned.
+func openNamed() (f *os.File, err error) {
+	f, err = os.Open("x")
+	return
+}
+
+// Good: a typed dial whose connection is closed.
+func dialTCPClosed(addr *net.TCPAddr) error {
+	c, err := net.DialTCP("tcp", nil, addr)
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	return nil
+}
+
+// Good: a close inside a goroutine's function literal.
+func closeInGoroutine(done chan struct{}) {
+	f, _ := os.Open("x")
+	go func() {
+		defer f.Close()
+		<-done
+	}()
+}

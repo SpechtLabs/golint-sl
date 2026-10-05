@@ -7,7 +7,6 @@ import (
 	"go/token"
 	"go/types"
 	"slices"
-	"strings"
 
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/analysis/passes/inspect"
@@ -23,7 +22,12 @@ This analyzer detects:
 1. HTTP response bodies not closed (resp.Body.Close())
 2. File handles not closed (file.Close())
 3. Database rows not closed (rows.Close())
-4. gRPC streams not closed
+4. Network and gRPC connections not closed (conn.Close())
+
+A resource counts as closed when its Close method is called anywhere in
+the function: deferred, in a function literal, in a return statement or
+as a plain call. A function that returns the resource, or a struct
+literal holding it, hands it to its caller and is not reported.
 
 Unclosed resources cause memory leaks, file descriptor exhaustion,
 and connection pool starvation.`
@@ -38,11 +42,24 @@ var Analyzer = &analysis.Analyzer{
 
 // resourcePattern defines a pattern for detecting unclosed resources
 type resourcePattern struct {
-	AssignType  string   // e.g., "*http.Response"
+	PkgPath     string   // package of the resource type, e.g. "net/http"
+	TypeNames   []string // resource types in PkgPath, e.g. "Response"
 	CloseField  string   // e.g., "Body" (empty means close on the var itself)
-	CloseCall   string   // e.g., "Close"
 	Message     string   // Error message
-	CreateFuncs []string // Functions that create this resource (if empty, match by type only)
+	CreateFuncs []string // Functions that create this resource
+}
+
+// resourceKey identifies what has to be closed: a variable, or a field of
+// it such as resp.Body.
+type resourceKey struct {
+	obj   types.Object
+	field string
+}
+
+type resourceInfo struct {
+	closeField string
+	message    string
+	pos        token.Pos
 }
 
 // closeMethod is the name of the method that releases a resource.
@@ -50,44 +67,39 @@ const closeMethod = "Close"
 
 var patterns = []resourcePattern{
 	{
-		AssignType:  "http.Response",
+		PkgPath:     "net/http",
+		TypeNames:   []string{"Response"},
 		CloseField:  "Body",
-		CloseCall:   closeMethod,
 		Message:     "HTTP response body must be closed: defer resp.Body.Close()",
 		CreateFuncs: []string{"Do", "Get", "Post", "Head", "PostForm", "RoundTrip"},
 	},
 	{
-		AssignType:  "os.File",
-		CloseField:  "",
-		CloseCall:   closeMethod,
+		PkgPath:     "os",
+		TypeNames:   []string{"File"},
 		Message:     "file must be closed: defer f.Close()",
 		CreateFuncs: []string{"Open", "OpenFile", "Create", "CreateTemp"},
 	},
 	{
-		AssignType:  "sql.Rows",
-		CloseField:  "",
-		CloseCall:   closeMethod,
+		PkgPath:     "database/sql",
+		TypeNames:   []string{"Rows"},
 		Message:     "database rows must be closed: defer rows.Close()",
 		CreateFuncs: []string{"Query", "QueryRow", "QueryContext", "QueryRowContext"},
 	},
 	{
-		AssignType:  "sql.Stmt",
-		CloseField:  "",
-		CloseCall:   closeMethod,
+		PkgPath:     "database/sql",
+		TypeNames:   []string{"Stmt"},
 		Message:     "prepared statement must be closed: defer stmt.Close()",
 		CreateFuncs: []string{"Prepare", "PrepareContext"},
 	},
 	{
-		AssignType:  "net.Conn",
-		CloseField:  "",
-		CloseCall:   closeMethod,
+		PkgPath:     "net",
+		TypeNames:   []string{"Conn", "TCPConn", "UDPConn", "IPConn", "UnixConn"},
 		Message:     "connection must be closed: defer conn.Close()",
 		CreateFuncs: []string{"Dial", "DialContext", "DialTimeout", "DialTCP", "DialUDP", "DialIP", "DialUnix"},
 	},
 	{
-		AssignType:  "grpc.ClientConn",
-		CloseField:  "",
-		CloseCall:   closeMethod,
+		PkgPath:     "google.golang.org/grpc",
+		TypeNames:   []string{"ClientConn"},
 		Message:     "gRPC connection must be closed: defer conn.Close()",
 		CreateFuncs: []string{"Dial", "DialContext", "NewClient"},
 	},
@@ -102,8 +114,8 @@ func run(pass *analysis.Pass) (any, error) {
 	}
 
 	insp.Preorder(nodeFilter, func(n ast.Node) {
-		fn, ok := n.(*ast.FuncDecl)
-		if !ok || fn.Body == nil {
+		fn := n.(*ast.FuncDecl)
+		if fn.Body == nil {
 			return
 		}
 
@@ -113,337 +125,90 @@ func run(pass *analysis.Pass) (any, error) {
 	return nil, nil
 }
 
+// checkFunction reports the resources fn opens and neither closes nor hands
+// to its caller. Variables are tracked by their types.Object, so a shadowing
+// variable of the same name is a resource of its own.
 func checkFunction(reporter *nolint.Reporter, pass *analysis.Pass, fn *ast.FuncDecl) {
-	// Track variables that hold closeable resources
-	resourceVars := make(map[string]resourceInfo)
+	resources := make(map[types.Object]resourceInfo)
 
-	// Track which resources have been closed
-	closedResources := make(map[string]bool)
+	// released holds the resources that are closed or returned.
+	released := make(map[resourceKey]bool)
 
-	// Track if-init assignments that are create-and-close patterns (to avoid double-processing)
-	skipAssignments := make(map[*ast.AssignStmt]bool)
+	results := resultObjects(pass, fn)
 
-	// First pass: find all resource assignments and closes
 	ast.Inspect(fn.Body, func(n ast.Node) bool {
 		switch node := n.(type) {
 		case *ast.AssignStmt:
-			// Skip if this assignment was already handled as part of an if-init pattern
-			if skipAssignments[node] {
-				// Still check for close calls on RHS
-				for _, rhs := range node.Rhs {
-					if call, ok := rhs.(*ast.CallExpr); ok {
-						checkCloseCall(call, closedResources)
-					}
-				}
-				return true
+			checkAssignment(pass, node, results, resources)
+		case *ast.CallExpr:
+			// A Close call in any position: deferred, plain, assigned,
+			// returned, or inside a function literal such as t.Cleanup's.
+			if key, ok := closeTarget(pass, node); ok {
+				released[key] = true
 			}
-			checkAssignment(pass, node, resourceVars)
-			// Also check for close calls on RHS: _ = f.Close()
-			for _, rhs := range node.Rhs {
-				if call, ok := rhs.(*ast.CallExpr); ok {
-					checkCloseCall(call, closedResources)
-				}
-			}
-		case *ast.DeferStmt:
-			checkDefer(node, closedResources)
-		case *ast.ExprStmt:
-			// Non-deferred close calls
-			if call, ok := node.X.(*ast.CallExpr); ok {
-				checkCloseCall(call, closedResources)
-				// Check for t.Cleanup(func() { ... }) patterns
-				checkTestCleanup(call, closedResources)
-			}
-		case *ast.IfStmt:
-			// Check for resources created in if init: if f, err := os.Create(...); err == nil
-			// These are handled separately - mark the variable as closed if Close is called in body
-			if node.Init != nil {
-				if assign, ok := node.Init.(*ast.AssignStmt); ok {
-					// Check if resource is created and closed within the same if statement
-					if isCreateAndClosePattern(assign, node.Body) {
-						// Mark this assignment to be skipped when ast.Inspect recurses into it
-						skipAssignments[assign] = true
-					} else {
-						checkAssignment(pass, assign, resourceVars)
-						// Also mark to skip double-processing
-						skipAssignments[assign] = true
-					}
-				}
-			}
-			// Check for closes inside if blocks (common pattern for create-and-close)
-			checkIfBlockCloses(node, closedResources)
-			// Check for pattern: if f, err := os.Create(...); err == nil { f.Close() }
-			checkIfInitAndClose(node, closedResources)
-		}
-		return true
-	})
-
-	// DEBUG: uncomment to trace
-	// fmt.Printf("DEBUG: resourceVars=%v closedResources=%v\n", resourceVars, closedResources)
-
-	// Report unclosed resources
-	for varName, info := range resourceVars {
-		closeKey := varName
-		if info.closeField != "" {
-			closeKey = varName + "." + info.closeField
-		}
-
-		if !closedResources[closeKey] && !closedResources[varName] {
-			reporter.Reportf(info.pos, "%s", info.message)
-		}
-	}
-}
-
-// checkTestCleanup checks for t.Cleanup(func() { ... Close() ... }) patterns
-func checkTestCleanup(call *ast.CallExpr, closedResources map[string]bool) {
-	sel, ok := call.Fun.(*ast.SelectorExpr)
-	if !ok {
-		return
-	}
-
-	// Check for t.Cleanup or similar cleanup patterns
-	if sel.Sel.Name != "Cleanup" {
-		return
-	}
-
-	// Check the argument (should be a function literal)
-	if len(call.Args) != 1 {
-		return
-	}
-
-	funcLit, ok := call.Args[0].(*ast.FuncLit)
-	if !ok {
-		return
-	}
-
-	// Look for Close calls inside the cleanup function
-	ast.Inspect(funcLit.Body, func(n ast.Node) bool {
-		if callExpr, ok := n.(*ast.CallExpr); ok {
-			checkCloseCall(callExpr, closedResources)
-		}
-		return true
-	})
-}
-
-// checkIfBlockCloses checks for closes inside if blocks
-func checkIfBlockCloses(ifStmt *ast.IfStmt, closedResources map[string]bool) {
-	// Check the if body
-	ast.Inspect(ifStmt.Body, func(n ast.Node) bool {
-		switch node := n.(type) {
-		case *ast.ExprStmt:
-			if call, ok := node.X.(*ast.CallExpr); ok {
-				checkCloseCall(call, closedResources)
-			}
-		case *ast.AssignStmt:
-			// Handle: _ = f.Close()
-			for _, rhs := range node.Rhs {
-				if call, ok := rhs.(*ast.CallExpr); ok {
-					checkCloseCall(call, closedResources)
-				}
-			}
-		case *ast.DeferStmt:
-			checkDefer(node, closedResources)
-		}
-		return true
-	})
-
-	// Check the else block if present
-	if ifStmt.Else != nil {
-		ast.Inspect(ifStmt.Else, func(n ast.Node) bool {
-			switch node := n.(type) {
-			case *ast.ExprStmt:
-				if call, ok := node.X.(*ast.CallExpr); ok {
-					checkCloseCall(call, closedResources)
-				}
-			case *ast.AssignStmt:
-				// Handle: _ = f.Close()
-				for _, rhs := range node.Rhs {
-					if call, ok := rhs.(*ast.CallExpr); ok {
-						checkCloseCall(call, closedResources)
-					}
-				}
-			case *ast.DeferStmt:
-				checkDefer(node, closedResources)
-			}
-			return true
-		})
-	}
-}
-
-// isCreateAndClosePattern checks if a resource is created in an if init and immediately closed in the body
-// Pattern: if f, err := os.Create(...); err == nil { _ = f.Close() }
-func isCreateAndClosePattern(assign *ast.AssignStmt, body *ast.BlockStmt) bool {
-	// Get the variable names from the assignment
-	varNames := make(map[string]bool)
-	for _, lhs := range assign.Lhs {
-		if ident, ok := lhs.(*ast.Ident); ok && ident.Name != "_" && ident.Name != "err" {
-			varNames[ident.Name] = true
-		}
-	}
-
-	if len(varNames) == 0 {
-		return false
-	}
-
-	// Check if any of these variables are closed in the body
-	closed := false
-	ast.Inspect(body, func(n ast.Node) bool {
-		var call *ast.CallExpr
-
-		switch node := n.(type) {
-		case *ast.ExprStmt:
-			call, _ = node.X.(*ast.CallExpr)
-		case *ast.AssignStmt:
-			if len(node.Rhs) == 1 {
-				call, _ = node.Rhs[0].(*ast.CallExpr)
-			}
-		}
-
-		if call != nil {
-			if target := getCloseTarget(call); target != "" {
-				parts := strings.Split(target, ".")
-				if len(parts) > 0 && varNames[parts[0]] {
-					closed = true
-					return false
+		case *ast.ReturnStmt:
+			// Returning the resource hands it to the caller.
+			for _, result := range node.Results {
+				for _, key := range returnedResources(pass, result) {
+					released[key] = true
 				}
 			}
 		}
 		return true
 	})
 
-	return closed
+	for obj, info := range resources {
+		if released[resourceKey{obj: obj}] || released[resourceKey{obj: obj, field: info.closeField}] {
+			continue
+		}
+
+		reporter.Reportf(info.pos, "%s", info.message)
+	}
 }
 
-// checkIfInitAndClose handles pattern: if f, err := os.Create(...); err == nil { f.Close() }
-// where the resource is created in the if's init clause and closed in the body
-func checkIfInitAndClose(ifStmt *ast.IfStmt, closedResources map[string]bool) {
-	// Check if the if statement has an init clause with an assignment
-	if ifStmt.Init == nil {
-		return
+// resultObjects returns the named results of fn. A resource assigned to one
+// of them is returned to the caller.
+func resultObjects(pass *analysis.Pass, fn *ast.FuncDecl) map[types.Object]bool {
+	objs := make(map[types.Object]bool)
+	if fn.Type.Results == nil {
+		return objs
 	}
 
-	assign, ok := ifStmt.Init.(*ast.AssignStmt)
-	if !ok {
-		return
-	}
-
-	// Get the variable names from the assignment
-	varNames := make(map[string]bool)
-	for _, lhs := range assign.Lhs {
-		if ident, ok := lhs.(*ast.Ident); ok && ident.Name != "_" {
-			varNames[ident.Name] = true
-		}
-	}
-
-	// Look for closes of these variables in the if body
-	ast.Inspect(ifStmt.Body, func(n ast.Node) bool {
-		var call *ast.CallExpr
-
-		switch node := n.(type) {
-		case *ast.ExprStmt:
-			call, _ = node.X.(*ast.CallExpr)
-		case *ast.AssignStmt:
-			// Handle: _ = f.Close()
-			if len(node.Rhs) == 1 {
-				call, _ = node.Rhs[0].(*ast.CallExpr)
+	for _, field := range fn.Type.Results.List {
+		for _, name := range field.Names {
+			if obj := pass.TypesInfo.Defs[name]; obj != nil {
+				objs[obj] = true
 			}
 		}
+	}
 
-		if call != nil {
-			if target := getCloseTarget(call); target != "" {
-				// Check if this closes one of the init variables
-				parts := strings.Split(target, ".")
-				if len(parts) > 0 && varNames[parts[0]] {
-					closedResources[target] = true
-					closedResources[parts[0]] = true
-				}
-			}
-		}
-		return true
-	})
+	return objs
 }
 
-// getCloseTarget returns the target of a Close() call, or empty string if not a Close call
-func getCloseTarget(call *ast.CallExpr) string {
-	sel, ok := call.Fun.(*ast.SelectorExpr)
-	if !ok {
-		return ""
-	}
-
-	if sel.Sel.Name != closeMethod {
-		return ""
-	}
-
-	return exprToString(sel.X)
-}
-
-type resourceInfo struct {
-	closeField string
-	message    string
-	pos        token.Pos
-}
-
-// isStdioAssignment checks if the RHS is os.Stdout, os.Stderr, or os.Stdin
-func isStdioAssignment(rhs ast.Expr) bool {
-	sel, ok := rhs.(*ast.SelectorExpr)
-	if !ok {
-		return false
-	}
-	ident, ok := sel.X.(*ast.Ident)
-	if !ok {
-		return false
-	}
-	if ident.Name != "os" {
-		return false
-	}
-	switch sel.Sel.Name {
-	case "Stdout", "Stderr", "Stdin":
-		return true
-	}
-	return false
-}
-
-func checkAssignment(pass *analysis.Pass, assign *ast.AssignStmt, resourceVars map[string]resourceInfo) {
-	// Check each assigned variable
+func checkAssignment(pass *analysis.Pass, assign *ast.AssignStmt, results map[types.Object]bool, resources map[types.Object]resourceInfo) {
 	for i, lhs := range assign.Lhs {
 		ident, ok := lhs.(*ast.Ident)
 		if !ok || ident.Name == "_" {
 			continue
 		}
 
-		// Get the RHS expression (for stdio check and function name extraction)
-		var rhsExpr ast.Expr
-		if i < len(assign.Rhs) {
-			rhsExpr = assign.Rhs[i]
-		} else if len(assign.Rhs) == 1 {
-			rhsExpr = assign.Rhs[0]
-		}
-
-		// Skip os.Stdout, os.Stderr, os.Stdin - these shouldn't be closed
-		if rhsExpr != nil && isStdioAssignment(rhsExpr) {
+		// Defs for :=, Uses for = to an existing variable.
+		obj := pass.TypesInfo.ObjectOf(ident)
+		if obj == nil || results[obj] {
 			continue
 		}
 
-		// Get the type of the variable being assigned, not the RHS expression
-		// This properly handles multi-return functions like os.CreateTemp() -> (*os.File, error)
-		var varType types.Type
-		if obj := pass.TypesInfo.Defs[ident]; obj != nil {
-			// For := assignments, the variable is being defined
-			varType = obj.Type()
-		} else if obj := pass.TypesInfo.Uses[ident]; obj != nil {
-			// For = assignments to existing variables
-			varType = obj.Type()
+		// The call is the matching RHS, or the only RHS of a multi-value
+		// call such as f, err := os.Open(name).
+		rhs := assign.Rhs[0]
+		if len(assign.Rhs) == len(assign.Lhs) {
+			rhs = assign.Rhs[i]
 		}
 
-		if varType == nil {
-			continue
-		}
-
-		// Get the function being called (if any)
-		callFuncName := getCallFuncName(assign.Rhs)
-
-		// Check against patterns
-		if pattern, ok := matchResourcePattern(varType.String(), callFuncName); ok {
-			resourceVars[ident.Name] = resourceInfo{
+		// Check against patterns, using the variable's type rather than
+		// the RHS expression's, which is a tuple for multi-value calls.
+		if pattern, ok := matchResourcePattern(obj.Type(), callFuncName(rhs)); ok {
+			resources[obj] = resourceInfo{
 				pos:        assign.Pos(),
 				closeField: pattern.CloseField,
 				message:    pattern.Message,
@@ -453,14 +218,24 @@ func checkAssignment(pass *analysis.Pass, assign *ast.AssignStmt, resourceVars m
 }
 
 // matchResourcePattern returns the first resource pattern matching the variable type and create call
-func matchResourcePattern(typeStr, callFuncName string) (resourcePattern, bool) {
+func matchResourcePattern(t types.Type, funcName string) (resourcePattern, bool) {
+	if ptr, ok := types.Unalias(t).(*types.Pointer); ok {
+		t = ptr.Elem()
+	}
+
+	named, ok := types.Unalias(t).(*types.Named)
+	if !ok || named.Obj().Pkg() == nil {
+		return resourcePattern{}, false
+	}
+
+	pkgPath, typeName := named.Obj().Pkg().Path(), named.Obj().Name()
+
 	for _, pattern := range patterns {
-		if !strings.Contains(typeStr, pattern.AssignType) {
+		if pattern.PkgPath != pkgPath || !slices.Contains(pattern.TypeNames, typeName) {
 			continue
 		}
 
-		// If pattern has CreateFuncs, only match if the call matches
-		if len(pattern.CreateFuncs) > 0 && !isCreateFunc(callFuncName, pattern.CreateFuncs) {
+		if !slices.Contains(pattern.CreateFuncs, funcName) {
 			continue
 		}
 
@@ -470,14 +245,10 @@ func matchResourcePattern(typeStr, callFuncName string) (resourcePattern, bool) 
 	return resourcePattern{}, false
 }
 
-// getCallFuncName extracts the function name from a call expression in the RHS
-func getCallFuncName(rhs []ast.Expr) string {
-	if len(rhs) == 0 {
-		return ""
-	}
-
-	// Handle the first RHS (for multiple returns, the call is always on the first)
-	call, ok := rhs[0].(*ast.CallExpr)
+// callFuncName returns the name of the function expr calls, or "" when expr
+// is not a call.
+func callFuncName(expr ast.Expr) string {
+	call, ok := expr.(*ast.CallExpr)
 	if !ok {
 		return ""
 	}
@@ -492,53 +263,62 @@ func getCallFuncName(rhs []ast.Expr) string {
 	return ""
 }
 
-// isCreateFunc checks if the function name matches any of the create functions
-func isCreateFunc(funcName string, createFuncs []string) bool {
-	return slices.Contains(createFuncs, funcName)
-}
-
-func checkDefer(deferStmt *ast.DeferStmt, closedResources map[string]bool) {
-	// Handle direct defer: defer resp.Body.Close()
-	checkCloseCall(deferStmt.Call, closedResources)
-
-	// Handle defer with function literal: defer func() { resp.Body.Close() }()
-	if call, ok := deferStmt.Call.Fun.(*ast.FuncLit); ok {
-		ast.Inspect(call.Body, func(n ast.Node) bool {
-			if callExpr, ok := n.(*ast.CallExpr); ok {
-				checkCloseCall(callExpr, closedResources)
-			}
-			return true
-		})
-	}
-}
-
-func checkCloseCall(call *ast.CallExpr, closedResources map[string]bool) {
+// closeTarget returns the resource a Close call releases: x.Close() closes
+// the variable x, x.Body.Close() the field Body of x.
+func closeTarget(pass *analysis.Pass, call *ast.CallExpr) (resourceKey, bool) {
 	sel, ok := call.Fun.(*ast.SelectorExpr)
-	if !ok {
-		return
+	if !ok || sel.Sel.Name != closeMethod {
+		return resourceKey{}, false
 	}
 
-	if sel.Sel.Name != closeMethod {
-		return
-	}
-
-	// Get what's being closed
-	closeTarget := exprToString(sel.X)
-	if closeTarget != "" {
-		closedResources[closeTarget] = true
-	}
+	return resourceRef(pass, sel.X)
 }
 
-func exprToString(expr ast.Expr) string {
-	switch e := expr.(type) {
-	case *ast.Ident:
-		return e.Name
-	case *ast.SelectorExpr:
-		base := exprToString(e.X)
-		if base != "" {
-			return base + "." + e.Sel.Name
-		}
-		return e.Sel.Name
+// returnedResources returns the resources a return statement's result hands
+// to the caller: the resource itself (f, resp.Body), or the resources a
+// struct literal holds (&Parser{f: f}).
+func returnedResources(pass *analysis.Pass, result ast.Expr) []resourceKey {
+	result = ast.Unparen(result)
+	if unary, ok := result.(*ast.UnaryExpr); ok && unary.Op == token.AND {
+		result = ast.Unparen(unary.X)
 	}
-	return ""
+
+	lit, ok := result.(*ast.CompositeLit)
+	if !ok {
+		if key, ok := resourceRef(pass, result); ok {
+			return []resourceKey{key}
+		}
+		return nil
+	}
+
+	var keys []resourceKey
+	for _, elt := range lit.Elts {
+		if kv, ok := elt.(*ast.KeyValueExpr); ok {
+			elt = kv.Value
+		}
+		if key, ok := resourceRef(pass, elt); ok {
+			keys = append(keys, key)
+		}
+	}
+
+	return keys
+}
+
+// resourceRef resolves a variable x or a field selection x.Field to the
+// variable's object.
+func resourceRef(pass *analysis.Pass, expr ast.Expr) (resourceKey, bool) {
+	switch e := ast.Unparen(expr).(type) {
+	case *ast.Ident:
+		if obj := pass.TypesInfo.Uses[e]; obj != nil {
+			return resourceKey{obj: obj}, true
+		}
+	case *ast.SelectorExpr:
+		if ident, ok := ast.Unparen(e.X).(*ast.Ident); ok {
+			if obj := pass.TypesInfo.Uses[ident]; obj != nil {
+				return resourceKey{obj: obj, field: e.Sel.Name}, true
+			}
+		}
+	}
+
+	return resourceKey{}, false
 }

@@ -80,3 +80,34 @@ func ifInitClosesOther(other *os.File) {
 		use(f)
 	}
 }
+
+// Bad: the typed dial functions return *net.TCPConn and friends, which are
+// connections too.
+func typedDials(tcp *net.TCPAddr, udp *net.UDPAddr, ip *net.IPAddr, unix *net.UnixAddr) {
+	c, _ := net.DialTCP("tcp", nil, tcp)    // want `connection must be closed: defer conn\.Close\(\)`
+	u, _ := net.DialUDP("udp", nil, udp)    // want `connection must be closed`
+	i, _ := net.DialIP("ip4:1", nil, ip)    // want `connection must be closed`
+	x, _ := net.DialUnix("unix", nil, unix) // want `connection must be closed`
+	use(c, u, i, x)
+}
+
+// Bad: an inner variable of the same name is a resource of its own; the
+// outer one's deferred close does not close it.
+func shadowed() {
+	f, _ := os.Open("a")
+	defer f.Close()
+	{
+		f, _ := os.Open("b") // want `file must be closed`
+		use(f)
+	}
+}
+
+// Bad: returning something read from the resource does not hand the
+// resource itself to the caller.
+func returnsContent() (string, error) {
+	f, err := os.Open("x") // want `file must be closed`
+	if err != nil {
+		return "", err
+	}
+	return f.Name(), nil
+}
