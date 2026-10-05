@@ -16,7 +16,8 @@ This analyzer detects reconcilers that modify resources but don't update status,
 
 Only a write through the status subresource counts as a status update:
 `Status().Update()`, `Status().Patch()`, `Status().Apply()` or the same calls on
-`SubResource("status")`. `Update` and `Patch` on the object itself ignore the
+`SubResource("status")`, also through a variable assigned one
+(`sw := r.Status()`). `Update` and `Patch` on the object itself ignore the
 status subresource, so assigning `obj.Status` fields and then calling
 `r.Update()` leaves the status unsaved and is reported. A `Patch` on a patch
 helper, such as cluster-api's `patch.Helper`, persists spec and status together
