@@ -62,6 +62,12 @@ func TestTrackDataFlow(t *testing.T) {
 			want:  2,
 		},
 		{
+			name:  "a value that flows around a loop is followed once",
+			src:   "package p\nfunc loop(s string) string { for i := 0; i < 3; i++ { s = s + \"x\" }; return s }\n",
+			value: param("loop"),
+			want:  4,
+		},
+		{
 			name: "globals have no referrers",
 			src:  "package p\nvar G int\nfunc f() { G = 1 }\n",
 			value: func(pkg *ssa.Package) (*ssa.Function, ssa.Value) {

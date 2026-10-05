@@ -352,24 +352,7 @@ func isTimeDependentCall(fn *ssa.Function) bool {
 // TrackDataFlow traces the flow of a value through the SSA graph
 // This is useful for understanding where sensitive data might leak
 func TrackDataFlow(fn *ssa.Function, value ssa.Value) []ssa.Instruction {
-	var flow []ssa.Instruction
-
-	// Get all referrers (uses) of this value
-	refs := value.Referrers()
-	if refs == nil {
-		return flow
-	}
-
-	for _, ref := range *refs {
-		flow = append(flow, ref)
-
-		// If the referrer produces a new value, track that too
-		if instr, ok := ref.(ssa.Value); ok {
-			flow = append(flow, TrackDataFlow(fn, instr)...)
-		}
-	}
-
-	return flow
+	return trackDataFlow(value, map[ssa.Value]bool{})
 }
 
 // CheckSensitiveDataLeak uses SSA to track if sensitive data might leak
@@ -452,4 +435,32 @@ func appendMethodFuncs(funcs []*ssa.Function, prog *ssa.Program, typ *ssa.Type) 
 	}
 
 	return funcs
+}
+
+// trackDataFlow is TrackDataFlow's recursion. seen holds the values already
+// followed: a value that loops back into itself through a phi node would
+// otherwise be followed forever.
+func trackDataFlow(value ssa.Value, seen map[ssa.Value]bool) []ssa.Instruction {
+	var flow []ssa.Instruction
+	if seen[value] {
+		return flow
+	}
+	seen[value] = true
+
+	// Get all referrers (uses) of this value
+	refs := value.Referrers()
+	if refs == nil {
+		return flow
+	}
+
+	for _, ref := range *refs {
+		flow = append(flow, ref)
+
+		// If the referrer produces a new value, track that too
+		if instr, ok := ref.(ssa.Value); ok {
+			flow = append(flow, trackDataFlow(instr, seen)...)
+		}
+	}
+
+	return flow
 }
