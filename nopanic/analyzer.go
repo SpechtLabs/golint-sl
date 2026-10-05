@@ -27,6 +27,10 @@ outside init and TestMain:
    Fatal* and Panic* methods of the log, logrus and zap loggers, however the
    logger is reached (a variable, a struct field, zap.L(), logrus.WithError)
 
+The Fatal, Panic and DPanic methods of a logger that wraps another (Fatal,
+Panicf, DPanicw, FatalContext and the like) are not reported: terminating is
+what they are for.
+
 Calling a Must* helper such as regexp.MustCompile is not reported; those
 are the idiomatic way to build package-level values. A Must* function of
 your own that calls panic is reported like any other panic.
@@ -103,8 +107,9 @@ func run(pass *analysis.Pass) (any, error) {
 			return true
 		}
 
-		// Skip allowed functions
-		if fn := enclosingFuncDecl(stack); fn != nil && fn.Recv == nil && allowedPanicFunctions[fn.Name.Name] {
+		// Skip allowed functions, and the Fatal and Panic methods of a logger
+		// that wraps another: terminating is what they are for.
+		if fn := enclosingFuncDecl(stack); fn != nil && (fn.Recv == nil && allowedPanicFunctions[fn.Name.Name] || isTerminatingLogWrapper(fn.Name.Name)) {
 			return true
 		}
 
@@ -113,6 +118,19 @@ func run(pass *analysis.Pass) (any, error) {
 	})
 
 	return nil, nil
+}
+
+// isTerminatingLogWrapper reports whether a function's name is that of a
+// terminating log call, optionally with zap's D prefix (DPanic logs and panics
+// in development) or a Context suffix: Fatal, Panicf, DPanicw, FatalContext.
+// A logger wrapping zap or logrus implements these by calling the wrapped
+// logger's own; names that merely start with one (PanicHandler) don't count.
+func isTerminatingLogWrapper(name string) bool {
+	name = strings.TrimSuffix(name, "Context")
+	if strings.HasPrefix(name, "DPanic") {
+		name = name[1:]
+	}
+	return terminatingLogFuncs[name]
 }
 
 // enclosingFuncDecl returns the function declaration the innermost node of

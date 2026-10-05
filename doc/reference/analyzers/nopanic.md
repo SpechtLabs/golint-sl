@@ -17,7 +17,7 @@ This analyzer detects calls that end the program in library code, where an error
 - `panic()` calls
 - Fatal and Panic log calls: the `log` and `logrus` package functions (`log.Fatal`, `logrus.Panicf`, ...) and the `Fatal*` and `Panic*` methods of the `log`, `logrus` and `zap` loggers, however the logger is reached: a variable, a struct field (`s.logger.Fatal`), `zap.L().Fatal` or `logrus.WithError(err).Fatal`
 
-Main packages, `_test.go` files, `init` functions and `TestMain` are not checked. Calling a `Must*` helper such as `regexp.MustCompile` is not reported; a `Must*` function of your own that calls `panic` is reported like any other panic.
+Main packages, `_test.go` files, `init` functions and `TestMain` are not checked. Calling a `Must*` helper such as `regexp.MustCompile` is not reported; a `Must*` function of your own that calls `panic` is reported like any other panic. The `Fatal*`, `Panic*` and `DPanic*` methods of a logger that wraps another, such as otelzap's, are not reported either: terminating is what they are for.
 
 ## Why It Matters
 

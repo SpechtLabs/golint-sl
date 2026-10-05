@@ -143,3 +143,25 @@ func TestMain() {
 func suppressed() {
 	panic("unreachable") //nolint:nopanic
 }
+
+// wrapped is a logger that wraps zap, as otelzap does.
+type wrapped struct{ l *zap.Logger }
+
+// Good: a wrapper's Fatal and Panic methods terminate by design.
+func (w *wrapped) Fatal(msg string) { w.l.Fatal(msg) }
+
+func (w *wrapped) Panicf(msg string) { w.l.Panic(msg) }
+
+func (w *wrapped) DPanicw(msg string) { w.l.Panic(msg) }
+
+func (w *wrapped) FatalContext(msg string) { w.l.Fatal(msg) }
+
+// Bad: a method that only starts like one isn't a log wrapper.
+func (w *wrapped) PanicHandler(msg string) {
+	w.l.Panic(msg) // want `Panic log in library code terminates the program`
+}
+
+// Bad: neither is a wrapper's other methods.
+func (w *wrapped) Info(msg string) {
+	w.l.Fatal(msg) // want `Fatal log in library code terminates the program`
+}
