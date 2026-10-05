@@ -141,13 +141,25 @@ func Close() error {
 
 // --- Framework callbacks may use fmt.Errorf ---
 
-// Good: functions whose name matches a callback pattern may use fmt.Errorf.
+// Good: functions whose name matches a callback pattern may use fmt.Errorf,
+// also inside a function literal in their body.
 func requestHandler() error {
-	return fmt.Errorf("handling: %w", errClosed)
+	wrap := func(err error) error {
+		return fmt.Errorf("wrapping: %w", err)
+	}
+	return wrap(fmt.Errorf("handling: %w", errClosed))
 }
 
 // Bad: errors.New is flagged even inside framework callbacks.
+func closeHook() error {
+	return errors.New("hook failed") // want `avoid errors.New\(\); use humane.New`
+}
+
 var errClosed = errors.New("closed") // want `avoid errors.New\(\); use humane.New`
+
+// Bad: the callback exemption ends with the callback. A package-level
+// fmt.Errorf right after one is not inside any function.
+var errLeaked = fmt.Errorf("leaked from %s", "handler") // want `avoid fmt.Errorf\(\); use humane.Wrap`
 
 // --- Calls the analyzer ignores ---
 
