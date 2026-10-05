@@ -6,6 +6,7 @@ import (
 	"regexp"
 
 	"github.com/sirupsen/logrus"
+	"go.uber.org/zap"
 )
 
 type Logger struct{}
@@ -52,12 +53,51 @@ func logrusCalls() {
 	logrus.Info("fine") // Good: not a fatal call
 }
 
-// Bad: Fatal on a receiver named like a zap logger or "logger".
-func zapStyle(zapLog Logger, logger Logger, other Logger) {
-	zapLog.Fatal("x")   // want `Fatal log in library code terminates the program; return an error instead`
-	logger.Fatalw("x")  // want `Fatal log in library code terminates the program`
-	logger.Info("fine") // Good: not Fatal
-	other.Fatal("x")    // Good: receiver name does not look like a logger
+// Good: Fatal methods of a type outside the known logging packages may do
+// anything, whatever the variable is called.
+func localLogger(zapLog Logger, logger Logger, other Logger) {
+	zapLog.Fatal("x")
+	logger.Fatalw("x")
+	logger.Info("fine")
+	other.Fatal("x")
+}
+
+// Server keeps its loggers in fields.
+type Server struct {
+	logger *log.Logger
+	zlog   *zap.Logger
+	sugar  *zap.SugaredLogger
+	lr     *logrus.Logger
+}
+
+// Bad: logger methods are matched by type, wherever the logger comes from:
+// a struct field, a call result or a parameter.
+func (s *Server) stop(err error, std *log.Logger) {
+	s.logger.Fatal("x")                 // want `Fatal log in library code terminates the program; return an error instead`
+	s.logger.Panicf("x")                // want `Panic log in library code terminates the program; return an error instead`
+	std.Fatalln("x")                    // want `Fatal log in library code terminates the program`
+	s.zlog.Fatal("x")                   // want `Fatal log in library code terminates the program`
+	s.zlog.Panic("x")                   // want `Panic log in library code terminates the program`
+	s.sugar.Fatalw("x")                 // want `Fatal log in library code terminates the program`
+	s.zlog.Sugar().Panicw("x")          // want `Panic log in library code terminates the program`
+	zap.L().Fatal("x")                  // want `Fatal log in library code terminates the program`
+	zap.S().Fatalw("x")                 // want `Fatal log in library code terminates the program`
+	s.lr.Fatal("x")                     // want `Fatal log in library code terminates the program`
+	s.lr.WithError(err).Fatalf("x")     // want `Fatal log in library code terminates the program`
+	logrus.WithError(err).Fatal("x")    // want `Fatal log in library code terminates the program`
+	logrus.New().Panicf("x")            // want `Panic log in library code terminates the program`
+	logrus.WithError(err).Panicln("x")  // want `Panic log in library code terminates the program`
+	s.logger.Println("fine")            // Good: not a fatal call
+	s.zlog.Info("fine")                 // Good: not a fatal call
+	s.zlog.DPanic("fine")               // Good: DPanic only panics in development
+	s.sugar.Infow("fine")               // Good: not a fatal call
+	logrus.WithError(err).Error("fine") // Good: not a fatal call
+}
+
+// Good: a local function called panic is not the builtin.
+func shadowed() {
+	panic := func(string) {}
+	panic("not the builtin")
 }
 
 // Good: Must* helpers from other packages are not reported.
@@ -77,6 +117,21 @@ func init() {
 	if re == nil {
 		panic("bad regexp")
 	}
+}
+
+// Bad: package-level code after init is not inside init.
+var afterInit = func() int {
+	panic("x") // want `panic\(\) in library code`
+}()
+
+// Bad: a method called init is not the package initializer.
+func (Logger) init() {
+	panic("x") // want `panic\(\) in library code`
+}
+
+// Good: function literals inside init belong to init.
+func init() {
+	func() { panic("bad init") }()
 }
 
 // Good: panics in TestMain are allowed, even outside a _test.go file.

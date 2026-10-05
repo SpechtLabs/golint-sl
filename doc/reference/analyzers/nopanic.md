@@ -12,7 +12,12 @@ Safety
 
 ## What It Checks
 
-This analyzer detects `panic()` calls in library code that should return errors instead.
+This analyzer detects calls that end the program in library code, where an error should be returned instead:
+
+- `panic()` calls
+- Fatal and Panic log calls: the `log` and `logrus` package functions (`log.Fatal`, `logrus.Panicf`, ...) and the `Fatal*` and `Panic*` methods of the `log`, `logrus` and `zap` loggers, however the logger is reached: a variable, a struct field (`s.logger.Fatal`), `zap.L().Fatal` or `logrus.WithError(err).Fatal`
+
+Main packages, `_test.go` files, `init` functions and `TestMain` are not checked. Calling a `Must*` helper such as `regexp.MustCompile` is not reported; a `Must*` function of your own that calls `panic` is reported like any other panic.
 
 ## Why It Matters
 
@@ -75,7 +80,9 @@ func init() {
 }
 ```
 
-### Allowed: Unreachable Code
+### Intentional: Unreachable Code
+
+A panic that marks a programmer error is still reported. Suppress it where it's intentional:
 
 ```go
 func processType(t Type) string {
@@ -85,7 +92,7 @@ func processType(t Type) string {
     case TypeB:
         return "b"
     default:
-        panic("unreachable")  // OK - indicates bug in caller
+        panic("unreachable") //nolint:nopanic // indicates a bug in the caller
     }
 }
 ```
