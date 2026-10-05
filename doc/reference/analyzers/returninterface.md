@@ -101,6 +101,13 @@ The analyzer exempts several common patterns:
 - `http.Handler`, `http.RoundTripper`
 - `fmt.Stringer`, `sort.Interface`
 
+These match by package path, so a renamed import (`stdio "io"`) or an alias
+of one of them is exempt too.
+
+**Type Parameters:** A result typed by a type parameter, as in
+`func Max[T cmp.Ordered](a, b T) T`, is whatever concrete type the caller
+instantiates it with, so it is never reported.
+
 ```go
 // Plugin system - interface return is appropriate
 func LoadPlugin(path string) (Plugin, error) {
