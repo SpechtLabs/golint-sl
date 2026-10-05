@@ -28,10 +28,10 @@ Kubernetes best practice is to always update Status to reflect current state,
 including error conditions. This allows users and other controllers to observe
 the actual state of resources.
 
-Only an Update, Patch or Apply through Status() or SubResource("status")
-persists the status. Update and Patch on the object itself ignore the status
-subresource, so assigning obj.Status fields and then calling client.Update
-leaves them unsaved. A Patch on something that isn't a client (a patch helper
+Only an Update, Patch or Apply through Status() or SubResource("status"),
+directly or through a variable assigned one, persists the status. Update and
+Patch on the object itself ignore the status subresource, so assigning
+obj.Status fields and then calling client.Update leaves them unsaved. A Patch on something that isn't a client (a patch helper
 such as cluster-api's patch.Helper, which has no Status method) persists spec
 and status together and counts as a status update too, and so does a call of
 a function or method of the package that writes the status, such as an
@@ -51,10 +51,19 @@ const statusField = "Status"
 // patchMethod is the method a patch helper persists spec and status with.
 const patchMethod = "Patch"
 
+// pkgFacts holds what the analyzer learns about the whole package before it
+// looks at a reconciler.
+type pkgFacts struct {
+	// decls maps the package's functions and methods to their declarations.
+	decls map[*types.Func]*ast.FuncDecl
+	// writers holds the variables assigned a status writer.
+	writers map[types.Object]bool
+}
+
 // statusUsage records which mutation and status operations a reconciler performs
 type statusUsage struct {
 	info             *types.Info
-	decls            map[*types.Func]*ast.FuncDecl
+	facts            *pkgFacts
 	visited          map[*types.Func]bool
 	resourceMutation bool
 	statusUpdate     bool
@@ -64,7 +73,7 @@ type statusUsage struct {
 func run(pass *analysis.Pass) (any, error) {
 	reporter := nolint.NewReporter(pass)
 	insp := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
-	decls := funcDecls(pass)
+	facts := collectFacts(pass)
 
 	nodeFilter := []ast.Node{
 		(*ast.FuncDecl)(nil),
@@ -80,29 +89,61 @@ func run(pass *analysis.Pass) (any, error) {
 			return
 		}
 
-		checkReconcilerStatus(reporter, pass.TypesInfo, decls, fn)
+		checkReconcilerStatus(reporter, pass.TypesInfo, facts, fn)
 	})
 
 	return nil, nil
 }
 
-// funcDecls maps the functions and methods declared in the package to their
-// declarations, so that a status write in a helper counts for its caller.
-func funcDecls(pass *analysis.Pass) map[*types.Func]*ast.FuncDecl {
-	decls := make(map[*types.Func]*ast.FuncDecl)
-	for _, file := range pass.Files {
-		for _, decl := range file.Decls {
-			fd, ok := decl.(*ast.FuncDecl)
-			if !ok {
-				continue
-			}
-			if fn, ok := pass.TypesInfo.Defs[fd.Name].(*types.Func); ok {
-				decls[fn] = fd
-			}
-		}
+// collectFacts maps the functions and methods declared in the package to
+// their declarations, so that a status write in a helper counts for its
+// caller, and records the variables that hold a status writer, so that
+// sw := r.Status(); sw.Update(ctx, obj) counts like r.Status().Update(ctx, obj).
+func collectFacts(pass *analysis.Pass) *pkgFacts {
+	facts := &pkgFacts{
+		decls:   make(map[*types.Func]*ast.FuncDecl),
+		writers: make(map[types.Object]bool),
 	}
 
-	return decls
+	for _, file := range pass.Files {
+		ast.Inspect(file, func(n ast.Node) bool {
+			switch n := n.(type) {
+			case *ast.FuncDecl:
+				if fn, ok := pass.TypesInfo.Defs[n.Name].(*types.Func); ok {
+					facts.decls[fn] = n
+				}
+			case *ast.AssignStmt:
+				facts.recordWriters(pass.TypesInfo, n.Lhs, n.Rhs)
+			case *ast.ValueSpec:
+				names := make([]ast.Expr, len(n.Names))
+				for i, name := range n.Names {
+					names[i] = name
+				}
+				facts.recordWriters(pass.TypesInfo, names, n.Values)
+			}
+			return true
+		})
+	}
+
+	return facts
+}
+
+// recordWriters records the variables among lhs that are assigned a call of
+// Status() or SubResource("status") from the matching expression of rhs.
+func (f *pkgFacts) recordWriters(info *types.Info, lhs, rhs []ast.Expr) {
+	if len(lhs) != len(rhs) {
+		return
+	}
+
+	for i, expr := range lhs {
+		ident, ok := expr.(*ast.Ident)
+		if !ok || !isStatusWriterCall(rhs[i]) {
+			continue
+		}
+		if obj := info.ObjectOf(ident); obj != nil {
+			f.writers[obj] = true
+		}
+	}
 }
 
 func isReconcileFunction(fn *ast.FuncDecl) bool {
@@ -127,8 +168,8 @@ func isReconcileFunction(fn *ast.FuncDecl) bool {
 	return false
 }
 
-func checkReconcilerStatus(reporter *nolint.Reporter, info *types.Info, decls map[*types.Func]*ast.FuncDecl, fn *ast.FuncDecl) {
-	usage := statusUsage{info: info, decls: decls, visited: make(map[*types.Func]bool)}
+func checkReconcilerStatus(reporter *nolint.Reporter, info *types.Info, facts *pkgFacts, fn *ast.FuncDecl) {
+	usage := statusUsage{info: info, facts: facts, visited: make(map[*types.Func]bool)}
 
 	// Track what operations are performed
 	ast.Inspect(fn.Body, func(n ast.Node) bool {
@@ -229,7 +270,7 @@ func (u *statusUsage) writesStatus(call *ast.CallExpr) bool {
 	}
 	u.visited[callee.Origin()] = true
 
-	decl := u.decls[callee.Origin()]
+	decl := u.facts.decls[callee.Origin()]
 	if decl == nil || decl.Body == nil {
 		return false
 	}
@@ -253,7 +294,7 @@ func (u *statusUsage) writesStatus(call *ast.CallExpr) bool {
 func (u *statusUsage) persistsStatus(sel *ast.SelectorExpr) bool {
 	switch sel.Sel.Name {
 	case "Update", patchMethod, "Apply":
-		if isStatusWriter(sel.X) {
+		if u.isStatusWriter(sel.X) {
 			return true
 		}
 	}
@@ -261,9 +302,20 @@ func (u *statusUsage) persistsStatus(sel *ast.SelectorExpr) bool {
 	return sel.Sel.Name == patchMethod && u.isPatchHelper(sel.X)
 }
 
-// isStatusWriter reports whether expr is a call of Status() or of
+// isStatusWriter reports whether expr is the writer for the status
+// subresource: a call of Status() or SubResource("status"), or a variable
+// assigned one.
+func (u *statusUsage) isStatusWriter(expr ast.Expr) bool {
+	if ident, ok := expr.(*ast.Ident); ok {
+		return u.facts.writers[u.info.ObjectOf(ident)]
+	}
+
+	return isStatusWriterCall(expr)
+}
+
+// isStatusWriterCall reports whether expr is a call of Status() or of
 // SubResource("status"), which return the writer for the status subresource.
-func isStatusWriter(expr ast.Expr) bool {
+func isStatusWriterCall(expr ast.Expr) bool {
 	call, ok := expr.(*ast.CallExpr)
 	if !ok {
 		return false

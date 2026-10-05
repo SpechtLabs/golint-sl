@@ -364,3 +364,46 @@ func (r *RetryReconciler) retry(ctx context.Context, obj *Object, n int) error {
 	}
 	return nil
 }
+
+// Good: the status writer stored in a variable before the write.
+type WriterVarReconciler struct{ client Client }
+
+func (r *WriterVarReconciler) Reconcile(ctx context.Context, obj *Object) error {
+	sw := r.client.Status()
+	if err := r.client.Update(ctx, obj); err != nil {
+		return err
+	}
+	obj.Status.Ready = true
+	return sw.Update(ctx, obj)
+}
+
+// Good: a declared variable holding SubResource("status"), with a Patch.
+type WriterDeclReconciler struct{ client Client }
+
+func (r *WriterDeclReconciler) Reconcile(ctx context.Context, obj *Object) error {
+	var sw, scale = r.client.SubResource("status"), r.client.Scale()
+	if err := scale.Update(ctx, obj); err != nil {
+		return err
+	}
+	obj.Status.Ready = true
+	return sw.Patch(ctx, obj)
+}
+
+// Bad: a variable holding the writer of another subresource, and one set
+// from a multi-value call.
+type ScaleVarReconciler struct{ client Client }
+
+func (r *ScaleVarReconciler) Reconcile(ctx context.Context, obj *Object) error { // want `reconciler mutates resources but doesn't update Status`
+	sw := r.client.SubResource("scale")
+	obj.Status.Ready = true
+	if err := sw.Update(ctx, obj); err != nil {
+		return err
+	}
+	w, ok := writerPair()
+	if !ok {
+		return nil
+	}
+	return w.Update(ctx, obj)
+}
+
+func writerPair() (StatusWriter, bool) { return StatusWriter{}, true }
