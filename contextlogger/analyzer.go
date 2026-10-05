@@ -16,6 +16,7 @@ import (
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/analysis/passes/inspect"
 	"golang.org/x/tools/go/ast/inspector"
+	"golang.org/x/tools/go/types/typeutil"
 
 	"github.com/spechtlabs/golint-sl/internal/nolint"
 )
@@ -54,22 +55,37 @@ var Analyzer = &analysis.Analyzer{
 }
 
 // GlobalLoggerPatterns are patterns that indicate global logger usage
-// These should use context-derived loggers instead for proper tracing
+// These should use context-derived loggers instead for proper tracing.
+//
+// Each pattern is a package name and a function name; a trailing "()" is
+// only decoration. A call matches when it calls exactly that function of a
+// package with that name (however it was imported), or that method on a
+// package-level variable with that name, such as var log = logrus.New().
 var GlobalLoggerPatterns = []string{
 	"log.Info",
+	"log.Infof",
 	"log.Error",
+	"log.Errorf",
 	"log.Warn",
+	"log.Warnf",
 	"log.Debug",
+	"log.Debugf",
 	"log.Fatal",
+	"log.Fatalf",
+	"log.Fatalln",
 	"log.Print",
 	"log.Printf",
 	"log.Println",
 	"zap.L()",
 	"zap.S()",
 	"logrus.Info",
+	"logrus.Infof",
 	"logrus.Error",
+	"logrus.Errorf",
 	"logrus.Warn",
+	"logrus.Warnf",
 	"logrus.Debug",
+	"logrus.Debugf",
 	"logrus.WithField",
 	"logrus.WithFields",
 }
@@ -103,7 +119,7 @@ func run(pass *analysis.Pass) (any, error) {
 		}
 
 		// Check for global logger usage
-		checkGlobalLoggerUsage(reporter, fn)
+		checkGlobalLoggerUsage(pass, reporter, fn)
 
 		// Check for logger passed as parameter (should use context instead)
 		checkLoggerParameter(reporter, fn)
@@ -129,7 +145,7 @@ func hasContextParameter(fn *ast.FuncDecl) bool {
 }
 
 // checkGlobalLoggerUsage detects usage of global logger when context is available
-func checkGlobalLoggerUsage(reporter *nolint.Reporter, fn *ast.FuncDecl) {
+func checkGlobalLoggerUsage(pass *analysis.Pass, reporter *nolint.Reporter, fn *ast.FuncDecl) {
 	usesFromContext := false
 	var globalLoggerCalls []*ast.CallExpr
 
@@ -139,18 +155,14 @@ func checkGlobalLoggerUsage(reporter *nolint.Reporter, fn *ast.FuncDecl) {
 			return true
 		}
 
-		callStr := exprToString(call.Fun)
-
 		// Check if FromContext is used
-		if strings.Contains(callStr, "FromContext") {
+		if isFromContextCall(call) {
 			usesFromContext = true
 		}
 
 		// Check for global logger patterns
-		for _, pattern := range GlobalLoggerPatterns {
-			if strings.Contains(callStr, pattern) {
-				globalLoggerCalls = append(globalLoggerCalls, call)
-			}
+		if isGlobalLoggerCall(pass, call) {
+			globalLoggerCalls = append(globalLoggerCalls, call)
 		}
 
 		return true
@@ -194,20 +206,6 @@ func checkLoggerParameter(reporter *nolint.Reporter, fn *ast.FuncDecl) {
 	}
 }
 
-// exprToString converts an expression to a readable string
-func exprToString(expr ast.Expr) string {
-	switch e := expr.(type) {
-	case *ast.Ident:
-		return e.Name
-	case *ast.SelectorExpr:
-		return exprToString(e.X) + "." + e.Sel.Name
-	case *ast.CallExpr:
-		return exprToString(e.Fun) + "()"
-	default:
-		return types.ExprString(expr)
-	}
-}
-
 // ContextLoggerInfo contains information about logger patterns in a package
 type ContextLoggerInfo struct {
 	HasFromContext     bool
@@ -239,18 +237,74 @@ func AnalyzeContextLogger(pass *analysis.Pass) *ContextLoggerInfo {
 			}
 
 		case *ast.CallExpr:
-			callStr := exprToString(node.Fun)
-			if strings.Contains(callStr, "FromContext") {
+			if isFromContextCall(node) {
 				info.ContextLoggerCalls++
 			}
-			for _, pattern := range GlobalLoggerPatterns {
-				if strings.Contains(callStr, pattern) {
-					info.GlobalLoggerCalls++
-					break
-				}
+			if isGlobalLoggerCall(pass, node) {
+				info.GlobalLoggerCalls++
 			}
 		}
 	})
 
 	return info
+}
+
+// isFromContextCall reports whether call calls a function or method whose own
+// name mentions FromContext, such as log.FromContext(ctx). A call chained on
+// its result, such as log.FromContext(ctx).Info("x"), is not one.
+func isFromContextCall(call *ast.CallExpr) bool {
+	var name string
+	switch fun := ast.Unparen(call.Fun).(type) {
+	case *ast.Ident:
+		name = fun.Name
+	case *ast.SelectorExpr:
+		name = fun.Sel.Name
+	}
+	return strings.Contains(name, "FromContext")
+}
+
+// isGlobalLoggerCall reports whether call matches one of GlobalLoggerPatterns.
+// The callee is resolved with go/types: a package-level function is
+// qualified by its package's name, and a method by the package-level variable
+// it is called on. Anything else, such as a method on a local variable or on
+// the result of another call, is not a global logger call.
+func isGlobalLoggerCall(pass *analysis.Pass, call *ast.CallExpr) bool {
+	fn, ok := typeutil.Callee(pass.TypesInfo, call).(*types.Func)
+	if !ok || fn.Pkg() == nil {
+		return false
+	}
+
+	qualifier := fn.Pkg().Name()
+	if sig, ok := fn.Type().(*types.Signature); ok && sig.Recv() != nil {
+		qualifier = packageVarName(pass, call)
+		if qualifier == "" {
+			return false
+		}
+	}
+
+	for _, pattern := range GlobalLoggerPatterns {
+		pkg, name, ok := strings.Cut(strings.TrimSuffix(pattern, "()"), ".")
+		if ok && pkg == qualifier && name == fn.Name() {
+			return true
+		}
+	}
+	return false
+}
+
+// packageVarName returns the name of the package-level variable a method call
+// is made on (log in log.Info("x") after var log = logrus.New()), or "".
+func packageVarName(pass *analysis.Pass, call *ast.CallExpr) string {
+	sel, ok := ast.Unparen(call.Fun).(*ast.SelectorExpr)
+	if !ok {
+		return ""
+	}
+	ident, ok := ast.Unparen(sel.X).(*ast.Ident)
+	if !ok {
+		return ""
+	}
+	v, ok := pass.TypesInfo.Uses[ident].(*types.Var)
+	if !ok || v.IsField() || v.Pkg() == nil || v.Parent() != v.Pkg().Scope() {
+		return ""
+	}
+	return v.Name()
 }

@@ -13,7 +13,7 @@ import (
 
 func TestContextLoggerAnalyzer(t *testing.T) {
 	testdata := analysistest.TestData()
-	analysistest.Run(t, testdata, contextlogger.Analyzer, "a")
+	analysistest.Run(t, testdata, contextlogger.Analyzer, "a", "globalvar")
 }
 
 // infoAnalyzer exposes AnalyzeContextLogger as an analyzer result so it can
@@ -38,8 +38,9 @@ func TestAnalyzeContextLogger(t *testing.T) {
 			want: contextlogger.ContextLoggerInfo{
 				HasFromContext: true,
 				HasIntoContext: true,
-				// FromContext(ctx) twice in use, once inside FromContext itself.
-				ContextLoggerCalls: 3,
+				// FromContext(ctx) three times in use (one of them chained, which
+				// is still one call), once inside FromContext itself.
+				ContextLoggerCalls: 4,
 				// log.Info, log.Error and stdlog.Printf (counted once despite
 				// matching both "log.Print" and "log.Printf").
 				GlobalLoggerCalls: 3,

@@ -19,6 +19,7 @@ func use(ctx context.Context) {
 	log.Info("c")
 	log.Error("d")
 	stdlog.Printf("e")
+	log.FromContext(ctx).Info("f")
 	other()
 }
 
