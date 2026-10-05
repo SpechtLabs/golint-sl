@@ -10,5 +10,5 @@ import (
 
 func TestClosureComplexityAnalyzer(t *testing.T) {
 	testdata := analysistest.TestData()
-	analysistest.Run(t, testdata, closurecomplexity.Analyzer, "a", "nofuncs")
+	analysistest.Run(t, testdata, closurecomplexity.Analyzer, "a", "nofuncs", "leak")
 }

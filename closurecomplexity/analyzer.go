@@ -6,6 +6,7 @@ package closurecomplexity
 
 import (
 	"go/ast"
+	"go/types"
 	"strings"
 
 	"golang.org/x/tools/go/analysis"
@@ -44,9 +45,9 @@ Bad pattern:
     }()
 
 This analyzer flags:
-1. Closures with more than 10 statements
+1. Closures with more than 15 statements
 2. Closures with nesting depth > 2
-3. Closures capturing many variables (> 3)
+3. Closures capturing more than 5 variables from an enclosing function
 
 Note: Test files are skipped, as table-driven tests commonly use
 longer closures for setup, fixtures, and mock configuration.`
@@ -108,7 +109,6 @@ func run(pass *analysis.Pass) (any, error) {
 	reporter := nolint.NewReporter(pass)
 	insp := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
 
-	var currentFunc *ast.FuncDecl
 	var inTestFile bool
 
 	// Track closures that should be exempt
@@ -116,7 +116,6 @@ func run(pass *analysis.Pass) (any, error) {
 
 	// First pass: find exempt closures
 	nodeFilter := []ast.Node{
-		(*ast.FuncDecl)(nil),
 		(*ast.DeferStmt)(nil),
 		(*ast.KeyValueExpr)(nil),
 		(*ast.ReturnStmt)(nil),
@@ -125,17 +124,12 @@ func run(pass *analysis.Pass) (any, error) {
 	}
 
 	insp.Preorder(nodeFilter, func(n ast.Node) {
-		if fn, ok := n.(*ast.FuncDecl); ok {
-			currentFunc = fn
-			return
-		}
 		markExemptClosures(n, exemptClosures)
 	})
 
 	// Second pass: check non-exempt closures
 	closureFilter := []ast.Node{
 		(*ast.File)(nil),
-		(*ast.FuncDecl)(nil),
 		(*ast.FuncLit)(nil),
 	}
 
@@ -145,9 +139,6 @@ func run(pass *analysis.Pass) (any, error) {
 			filename := pass.Fset.Position(node.Pos()).Filename
 			inTestFile = strings.HasSuffix(filename, "_test.go")
 
-		case *ast.FuncDecl:
-			currentFunc = node
-
 		case *ast.FuncLit:
 			if inTestFile {
 				return // Skip closures in test files
@@ -155,7 +146,7 @@ func run(pass *analysis.Pass) (any, error) {
 			if exemptClosures[node] {
 				return // Skip exempt closures
 			}
-			checkClosure(reporter, node, currentFunc)
+			checkClosure(pass, reporter, node)
 		}
 	})
 
@@ -209,7 +200,7 @@ func markExemptClosures(n ast.Node, exempt map[*ast.FuncLit]bool) {
 	}
 }
 
-func checkClosure(reporter *nolint.Reporter, closure *ast.FuncLit, parentFunc *ast.FuncDecl) {
+func checkClosure(pass *analysis.Pass, reporter *nolint.Reporter, closure *ast.FuncLit) {
 	if closure.Body == nil {
 		return
 	}
@@ -231,20 +222,22 @@ func checkClosure(reporter *nolint.Reporter, closure *ast.FuncLit, parentFunc *a
 	}
 
 	// Count captured variables
-	if parentFunc != nil {
-		captured := countCapturedVars(closure, parentFunc)
-		if captured > MaxCapturedVars {
-			reporter.Reportf(closure.Pos(),
-				"closure captures %d variables from outer scope (max %d); consider passing them as parameters or extracting to a named function",
-				captured, MaxCapturedVars)
-		}
+	captured := countCapturedVars(pass, closure)
+	if captured > MaxCapturedVars {
+		reporter.Reportf(closure.Pos(),
+			"closure captures %d variables from outer scope (max %d); consider passing them as parameters or extracting to a named function",
+			captured, MaxCapturedVars)
 	}
 }
 
+// countStatements counts the statements in block. Blocks themselves (the
+// closure's body, an if's braces) only group statements and are not counted.
 func countStatements(block *ast.BlockStmt) int {
 	count := 0
 	ast.Inspect(block, func(n ast.Node) bool {
 		switch n.(type) {
+		case *ast.BlockStmt:
+			// Not a statement of its own; count what it holds
 		case ast.Stmt:
 			count++
 		case *ast.FuncLit:
@@ -261,13 +254,7 @@ func maxNestingDepth(node ast.Node, current int) int {
 	if body == nil {
 		return current
 	}
-
-	maxDepth := current
-	for _, stmt := range body.List {
-		maxDepth = max(maxDepth, stmtNestingDepth(stmt, current))
-	}
-
-	return maxDepth
+	return listNestingDepth(body.List, current)
 }
 
 // nestedBody returns the block a nesting statement (or a bare block) opens,
@@ -303,9 +290,26 @@ func stmtNestingDepth(stmt ast.Stmt, current int) int {
 		return maxNestingDepth(s, current+1)
 	case *ast.BlockStmt:
 		return maxNestingDepth(s, current)
+	case *ast.CaseClause:
+		// The switch already opened a level; its cases share it
+		return listNestingDepth(s.Body, current)
+	case *ast.CommClause:
+		return listNestingDepth(s.Body, current)
+	case *ast.LabeledStmt:
+		return stmtNestingDepth(s.Stmt, current)
 	default:
 		return current
 	}
+}
+
+// listNestingDepth returns the deepest nesting reached by a list of statements
+// (a block's or a case clause's) at depth current.
+func listNestingDepth(stmts []ast.Stmt, current int) int {
+	maxDepth := current
+	for _, stmt := range stmts {
+		maxDepth = max(maxDepth, stmtNestingDepth(stmt, current))
+	}
+	return maxDepth
 }
 
 // elseNestingDepth returns the nesting depth reached by an if statement's
@@ -313,7 +317,9 @@ func stmtNestingDepth(stmt ast.Stmt, current int) int {
 func elseNestingDepth(els ast.Stmt, current int) int {
 	switch e := els.(type) {
 	case *ast.IfStmt:
-		return maxNestingDepth(e, current+1)
+		// An else-if sits at the same level as the if it continues, and may
+		// have an else of its own
+		return stmtNestingDepth(e, current)
 	case *ast.BlockStmt:
 		return maxNestingDepth(e, current)
 	default:
@@ -321,104 +327,27 @@ func elseNestingDepth(els ast.Stmt, current int) int {
 	}
 }
 
-func countCapturedVars(closure *ast.FuncLit, parentFunc *ast.FuncDecl) int {
-	// Get closure parameters (not captured)
-	params := make(map[string]bool)
-	if closure.Type.Params != nil {
-		for _, field := range closure.Type.Params.List {
-			for _, name := range field.Names {
-				params[name.Name] = true
-			}
-		}
-	}
-
-	// Get parent function's local variables
-	parentVars := collectLocalVars(parentFunc)
-
-	// Find variables used in closure that come from parent
-	captured := make(map[string]bool)
+// countCapturedVars counts the distinct local variables closure uses that are
+// declared outside it: the enclosing function's parameters and locals, and
+// those of any enclosing closure. Package-level variables, struct fields and
+// the closure's own parameters and locals are not captures.
+func countCapturedVars(pass *analysis.Pass, closure *ast.FuncLit) int {
+	captured := make(map[*types.Var]bool)
 	ast.Inspect(closure.Body, func(n ast.Node) bool {
 		ident, ok := n.(*ast.Ident)
 		if !ok {
 			return true
 		}
-
-		// Skip if it's a parameter
-		if params[ident.Name] {
+		v, ok := pass.TypesInfo.Uses[ident].(*types.Var)
+		if !ok || v.IsField() || v.Parent() == nil || v.Parent() == pass.Pkg.Scope() {
 			return true
 		}
-
-		// Skip common non-captured identifiers
-		if isBuiltinOrCommon(ident.Name) {
-			return true
+		if v.Pos() < closure.Pos() || v.Pos() >= closure.End() {
+			captured[v] = true
 		}
-
-		// Check if it's from parent scope
-		if parentVars[ident.Name] {
-			captured[ident.Name] = true
-		}
-
 		return true
 	})
-
 	return len(captured)
-}
-
-func collectLocalVars(fn *ast.FuncDecl) map[string]bool {
-	vars := make(map[string]bool)
-
-	if fn == nil || fn.Body == nil {
-		return vars
-	}
-
-	// Add parameters
-	if fn.Type.Params != nil {
-		for _, field := range fn.Type.Params.List {
-			for _, name := range field.Names {
-				vars[name.Name] = true
-			}
-		}
-	}
-
-	// Add local variables
-	ast.Inspect(fn.Body, func(n ast.Node) bool {
-		switch node := n.(type) {
-		case *ast.AssignStmt:
-			for _, lhs := range node.Lhs {
-				if ident, ok := lhs.(*ast.Ident); ok {
-					vars[ident.Name] = true
-				}
-			}
-		case *ast.ValueSpec:
-			for _, name := range node.Names {
-				vars[name.Name] = true
-			}
-		case *ast.FuncLit:
-			// Don't recurse into closures
-			return false
-		}
-		return true
-	})
-
-	return vars
-}
-
-func isBuiltinOrCommon(name string) bool {
-	builtins := map[string]bool{
-		// Builtins
-		"nil": true, "true": true, "false": true,
-		"append": true, "cap": true, "close": true, "complex": true,
-		"copy": true, "delete": true, "imag": true, "len": true,
-		"make": true, "new": true, "panic": true, "print": true,
-		"println": true, "real": true, "recover": true,
-		// Common types
-		"error": true, "string": true, "int": true, "bool": true,
-		"byte": true, "rune": true, "float64": true, "float32": true,
-		// Common packages (when used as selectors)
-		"fmt": true, "log": true, "time": true, "context": true,
-		"http": true, "json": true, "errors": true, "strings": true,
-	}
-	return builtins[name]
 }
 
 // getCallFuncName extracts the function name from a call expression

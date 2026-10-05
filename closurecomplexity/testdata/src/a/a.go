@@ -330,3 +330,144 @@ func Suppressed(a bool) {
 	}
 	f()
 }
+
+// Good: exactly 15 statements; the body's braces are not a statement
+func FifteenStatements(n int) {
+	f := func() {
+		_ = n
+		_ = n
+		_ = n
+		_ = n
+		_ = n
+		_ = n
+		_ = n
+		_ = n
+		_ = n
+		_ = n
+		_ = n
+		_ = n
+		_ = n
+		_ = n
+		_ = n
+	}
+	f()
+}
+
+// Bad: 16 statements, and an if's braces don't add to the count
+func SixteenStatements(n int, a bool) {
+	f := func() { // want `closure has 16 statements \(max 15\)`
+		_ = n
+		_ = n
+		_ = n
+		_ = n
+		_ = n
+		_ = n
+		_ = n
+		_ = n
+		_ = n
+		_ = n
+		_ = n
+		_ = n
+		_ = n
+		_ = n
+		if a {
+			_ = n
+		}
+	}
+	f()
+}
+
+// Good: the closure declares its own x1 to x6, and blank identifiers are not
+// variables
+func Redeclared() {
+	x1, x2, x3, x4, x5, x6 := 1, 2, 3, 4, 5, 6
+	_, _, _, _, _, _ = x1, x2, x3, x4, x5, x6
+	f := func() int {
+		x1, x2, x3, x4, x5, x6 := 1, 2, 3, 4, 5, 6
+		_, _, _, _, _, _ = x1, x2, x3, x4, x5, x6
+		return x1 + x2 + x3 + x4 + x5 + x6
+	}
+	_ = f()
+}
+
+// Good: fields of a captured struct count once, as the struct
+func FieldsOfOne() {
+	var s struct{ a, b, c, d, e, f int }
+	g := func() int { return s.a + s.b + s.c + s.d + s.e + s.f }
+	_ = g()
+}
+
+// Bad: nesting inside a switch case body
+func DeepCase(a, b bool, x int) {
+	f := func() { // want `closure has nesting depth of 4 \(max 2\)`
+		switch x {
+		case 1:
+			if a {
+				if b {
+					if a {
+					}
+				}
+			}
+		}
+	}
+	f()
+}
+
+// Bad: nesting inside a select case body
+func DeepComm(a bool, ch chan int) {
+	f := func() { // want `closure has nesting depth of 3 \(max 2\)`
+		select {
+		case <-ch:
+			if a {
+				if a {
+				}
+			}
+		}
+	}
+	f()
+}
+
+// Bad: nesting past the first else-if
+func DeepElseIfChain(a, b, c bool) {
+	f := func() { // want `closure has nesting depth of 4 \(max 2\)`
+		if a {
+		} else if b {
+		} else if c {
+			if a {
+				if b {
+					if c {
+					}
+				}
+			}
+		}
+	}
+	f()
+}
+
+// Bad: a labeled loop still opens a level
+func DeepLabeled(a bool) {
+	f := func() { // want `closure has nesting depth of 3 \(max 2\)`
+	outer:
+		for {
+			if a {
+				if a {
+					break outer
+				}
+			}
+		}
+	}
+	f()
+}
+
+// Good: a switch with shallow cases stays at two levels
+func ShallowCase(a bool, x int) {
+	f := func() {
+		switch x {
+		case 1:
+			if a {
+			}
+		default:
+		}
+	}
+	f()
+}
