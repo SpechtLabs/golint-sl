@@ -7,7 +7,6 @@ package contextfirst
 import (
 	"go/ast"
 	"go/types"
-	"strings"
 
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/analysis/passes/inspect"
@@ -21,6 +20,8 @@ const Doc = `ensure context.Context is always the first parameter
 
 Go convention dictates that context.Context should be the first parameter
 when a function accepts one. This makes the context flow obvious and consistent.
+Only the standard library's context.Context counts; framework types named
+Context, such as *gin.Context, are left alone.
 
 Good:
     func ProcessRequest(ctx context.Context, req *Request) error
@@ -65,21 +66,12 @@ func run(pass *analysis.Pass) (any, error) {
 			pos = node
 		}
 
-		if params == nil || len(params.List) < 2 {
+		if params == nil || params.NumFields() < 2 {
 			return
 		}
 
-		// Find context parameter position
-		ctxPos := -1
-		for i, field := range params.List {
-			if isContextType(field.Type) {
-				ctxPos = i
-				break
-			}
-		}
-
-		// If context exists but isn't first, report
-		if ctxPos > 0 {
+		// If a context exists but isn't first, report its position
+		if ctxPos := contextParamPosition(pass, params); ctxPos > 0 {
 			reporter.Reportf(pos.Pos(),
 				"context.Context should be the first parameter in %s, not parameter %d",
 				name, ctxPos+1)
@@ -89,7 +81,28 @@ func run(pass *analysis.Pass) (any, error) {
 	return nil, nil
 }
 
-func isContextType(expr ast.Expr) bool {
-	typeStr := types.ExprString(expr)
-	return typeStr == "context.Context" || strings.HasSuffix(typeStr, ".Context")
+// contextParamPosition returns the zero-based position of the first
+// context.Context parameter in params, counting every name of a grouped field
+// (a, b int counts as two parameters), or -1 when there is none.
+func contextParamPosition(pass *analysis.Pass, params *ast.FieldList) int {
+	pos := 0
+	for _, field := range params.List {
+		if isContextType(pass.TypesInfo.TypeOf(field.Type)) {
+			return pos
+		}
+		pos += max(len(field.Names), 1)
+	}
+	return -1
+}
+
+// isContextType reports whether t is the standard library's context.Context.
+// Framework types that happen to be called Context, such as *gin.Context, are
+// not.
+func isContextType(t types.Type) bool {
+	named, ok := types.Unalias(t).(*types.Named)
+	if !ok {
+		return false
+	}
+	obj := named.Obj()
+	return obj.Pkg() != nil && obj.Pkg().Path() == "context" && obj.Name() == "Context"
 }
