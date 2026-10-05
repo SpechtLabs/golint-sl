@@ -331,7 +331,8 @@ func containsNode(parent ast.Node, target ast.Node) bool {
 
 // checkMutexUsage checks that struct methods use mutex properly
 func checkMutexUsage(reporter *nolint.Reporter, fn *ast.FuncDecl, structsWithMutex map[string]bool) {
-	if fn.Recv == nil || len(fn.Recv.List) == 0 {
+	// A method without a body (implemented in assembly) has nothing to check.
+	if fn.Recv == nil || len(fn.Recv.List) == 0 || fn.Body == nil {
 		return
 	}
 
