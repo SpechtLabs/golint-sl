@@ -18,8 +18,12 @@ import (
 // Doc is the exporteddoc analyzer's documentation.
 const Doc = `ensure exported symbols have documentation comments
 
-Exported functions, types, and variables should have documentation
-that starts with the symbol name. This enables godoc and IDE tooltips.
+Exported functions, types, variables and constants should have
+documentation. This enables godoc and IDE tooltips. The doc comment of a
+function, a type, or a standalone var or const declaring one name should
+start with the symbol name; in a parenthesized var or const group, a doc
+comment on the group or on a spec is enough. Methods and Err-prefixed
+sentinel errors are not checked.
 
 Good:
     // Service handles business logic for user operations.
@@ -89,7 +93,8 @@ func checkFuncDoc(reporter *nolint.Reporter, fn *ast.FuncDecl) {
 		return
 	}
 
-	if fn.Doc == nil || len(fn.Doc.List) == 0 {
+	text := docText(fn.Doc)
+	if text == "" {
 		reporter.Reportf(fn.Pos(),
 			"exported function %s should have a documentation comment",
 			fn.Name.Name)
@@ -97,8 +102,7 @@ func checkFuncDoc(reporter *nolint.Reporter, fn *ast.FuncDecl) {
 	}
 
 	// Check that doc starts with function name
-	firstLine := fn.Doc.List[0].Text
-	if !strings.HasPrefix(firstLine, "// "+fn.Name.Name) {
+	if !strings.HasPrefix(text, fn.Name.Name) {
 		reporter.Reportf(fn.Doc.Pos(),
 			"documentation for %s should start with %q",
 			fn.Name.Name, fn.Name.Name)
@@ -128,7 +132,8 @@ func checkTypeSpecDoc(reporter *nolint.Reporter, decl *ast.GenDecl, s *ast.TypeS
 		doc = decl.Doc
 	}
 
-	if doc == nil || len(doc.List) == 0 {
+	text := docText(doc)
+	if text == "" {
 		reporter.Reportf(s.Pos(),
 			"exported type %s should have a documentation comment",
 			s.Name.Name)
@@ -136,8 +141,7 @@ func checkTypeSpecDoc(reporter *nolint.Reporter, decl *ast.GenDecl, s *ast.TypeS
 	}
 
 	// Check that doc starts with type name
-	firstLine := doc.List[0].Text
-	if !strings.HasPrefix(firstLine, "// "+s.Name.Name) {
+	if !strings.HasPrefix(text, s.Name.Name) {
 		reporter.Reportf(doc.Pos(),
 			"documentation for %s should start with %q",
 			s.Name.Name, s.Name.Name)
@@ -145,8 +149,15 @@ func checkTypeSpecDoc(reporter *nolint.Reporter, decl *ast.GenDecl, s *ast.TypeS
 }
 
 // checkValueSpecDoc checks that the exported variables and constants declared
-// in decl are documented.
+// in decl are documented, and that the doc comment of a standalone
+// declaration of one name starts with that name.
 func checkValueSpecDoc(reporter *nolint.Reporter, decl *ast.GenDecl, s *ast.ValueSpec) {
+	doc := s.Doc
+	if doc == nil {
+		doc = decl.Doc
+	}
+	text := docText(doc)
+
 	for _, name := range s.Names {
 		if !ast.IsExported(name.Name) {
 			continue
@@ -157,15 +168,38 @@ func checkValueSpecDoc(reporter *nolint.Reporter, decl *ast.GenDecl, s *ast.Valu
 			continue
 		}
 
-		doc := s.Doc
-		if doc == nil {
-			doc = decl.Doc
-		}
-
-		if doc == nil || len(doc.List) == 0 {
+		if text == "" {
 			reporter.Reportf(name.Pos(),
 				"exported variable %s should have a documentation comment",
 				name.Name)
+			continue
 		}
+
+		// Only a standalone declaration of one name has a doc written for
+		// that name. Inside parentheses, a comment often heads a section of
+		// the group (as in an iota block), and a spec declaring several names
+		// can't start with each of them.
+		if !documentsOneName(decl, s) || strings.HasPrefix(text, name.Name) {
+			continue
+		}
+		reporter.Reportf(doc.Pos(),
+			"documentation for %s should start with %q",
+			name.Name, name.Name)
 	}
+}
+
+// documentsOneName reports whether s declares a single name outside
+// parentheses, so that its doc comment is written for that name.
+func documentsOneName(decl *ast.GenDecl, s *ast.ValueSpec) bool {
+	return len(s.Names) == 1 && !decl.Lparen.IsValid()
+}
+
+// docText returns the text of a doc comment without its comment markers and
+// directives such as //go:generate or //nolint:..., or "" if there is no doc
+// comment or it holds only directives.
+func docText(doc *ast.CommentGroup) string {
+	if doc == nil {
+		return ""
+	}
+	return strings.TrimSpace(doc.Text())
 }

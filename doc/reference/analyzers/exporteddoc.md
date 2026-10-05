@@ -12,7 +12,9 @@ Architecture
 
 ## What It Checks
 
-This analyzer detects exported types, functions, methods, and variables without documentation comments.
+This analyzer detects exported functions, types, variables and constants without documentation comments. Methods, test files and `Err`-prefixed sentinel errors are not checked.
+
+The doc comment of a function, a type, or a standalone `var` or `const` declaring one name must start with that name. Line comments (`//`) and block comments (`/* */`) both count; directives such as `//go:generate` or `//nolint:...` don't. In a parenthesized `var` or `const` group, a doc comment on the group or on the spec is enough, since a comment there often heads a section of the group.
 
 ## Why It Matters
 
