@@ -101,8 +101,8 @@ var (
 
 func Suppressed() {} //nolint:exporteddoc
 
-// Good: nolint on the preceding line suppresses the diagnostic (the directive
-// is the doc comment, so the "should start with" diagnostic is suppressed)
+// Good: nolint on the preceding line suppresses the diagnostic (a directive
+// isn't documentation, so the type counts as undocumented)
 
 //nolint:golint-sl
 type SuppressedType struct{}
@@ -113,3 +113,52 @@ func OtherLinter() {} //nolint:nilcheck // want `exported function OtherLinter s
 
 var _ = counter
 var _ internal
+
+// Good: a block comment that starts with the name is documentation
+
+/* Block is documented with a block comment. */
+type Block struct{}
+
+/*
+BlockFunc is documented with a multi-line block comment.
+*/
+func BlockFunc() {}
+
+// Bad: a block comment that doesn't start with the name
+
+/* holds blocks */ // want `documentation for Blocks should start with "Blocks"`
+type Blocks struct{}
+
+// Bad: a directive alone is not documentation
+
+//go:noinline
+func DirectiveOnly() {} // want `exported function DirectiveOnly should have a documentation comment`
+
+// Good: a directive after the doc comment doesn't hide it
+
+// WithDirective is documented above its directive.
+//
+//go:noinline
+func WithDirective() {}
+
+// Bad: the doc of a standalone variable or constant must start with its name
+
+// the maximum number of retries // want `documentation for MaxRetries should start with "MaxRetries"`
+var MaxRetries = 3
+
+// default port // want `documentation for Port should start with "Port"`
+const Port = 8080
+
+// Good: the doc of a standalone variable that starts with its name
+
+// Region is the default region.
+var Region = "eu"
+
+// Good: inside parentheses a comment may head a section of the group
+
+// Keywords of the language.
+const (
+	// Policy keywords.
+	KwPolicy = iota
+	KwModule
+)
