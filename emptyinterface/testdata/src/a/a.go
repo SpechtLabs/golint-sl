@@ -49,7 +49,7 @@ func Configure(opts map[string]interface{}) { // want `parameter "opts" is map\[
 }
 
 // Bad: each name in a grouped map[string]any parameter is reported
-func Merge(left, right map[string]any) { // want `parameter "left" is map\[string\]interface\{\}` `parameter "right" is map\[string\]interface\{\}`
+func Merge(left, right map[string]any) { // want `parameter "left" is map\[string\]any` `parameter "right" is map\[string\]any`
 	_, _ = left, right
 }
 
@@ -72,12 +72,12 @@ func (c *Cache) Item(key string) any { return nil } // want `function "Item" ret
 // Bad: struct fields holding map[string]interface{} and []interface{}
 type Payload struct {
 	Meta   map[string]interface{} // want `field "Meta" is map\[string\]interface\{\}; consider using a typed struct or wrapping with type-safe methods`
-	Items  []interface{}          // want `field "Items" is \[\]interface\{\}; consider using a concrete slice type or generics`
-	A, B   []any                  // want `field "A, B" is \[\]interface\{\}`
+	Items  []interface{}          // want `field "Items" is \[\]interface\{\}; consider using a concrete element type or generics`
+	A, B   []any                  // want `field "A, B" is \[\]any; consider using a concrete element type or generics`
 	Labels map[string]string      // Good: typed map
 	Names  []string               // Good: typed slice
 	Groups map[string][]string    // Good: map of slices
-	Fixed  [4]any                 // want `field "Fixed" is \[\]interface\{\}`
+	Fixed  [4]any                 // want `field "Fixed" is \[4\]any`
 	Iface  interface{ Close() }   // Good: non-empty interface
 }
 
@@ -85,7 +85,31 @@ type Payload struct {
 type Bag map[string]any
 type List []any
 
-// Good: type assertions are not checked (placeholder in the analyzer)
+// Bad: the message names the map's actual key type
+func Index(byID map[int]any) { // want `parameter "byID" is map\[int\]any; consider using a struct or typed map`
+	_ = byID
+}
+
+// Bad: an alias of any is the empty interface too
+type Anything = any
+
+func Pick() Anything { // want `function "Pick" returns interface\{\}/any`
+	return nil
+}
+
+// Good: a defined type is a deliberate name for the empty interface
+type Value interface{}
+
+func Current() Value { return nil }
+
+// Good: a local type named any isn't the empty interface
+func Shadowed() {
+	type any struct{}
+	type holder struct{ Items []any }
+	_ = holder{}
+}
+
+// Good: type assertions are left to errcheck's check-type-assertions
 func Assert(v any) int {
 	n := v.(int)
 	return n

@@ -31,8 +31,12 @@ Common problematic patterns:
 3. Functions returning interface{}
    - Return concrete types; "accept interfaces, return structs"
 
-4. Type assertions without ok check
-   - Always use val, ok := x.(Type)
+The analyzer reports results of type interface{} or any (except for functions
+whose names mark them as decoders, getters or wrappers, such as Unmarshal,
+Get or Value), parameters that are maps with interface{} values, and struct
+fields that are maps, slices or arrays of interface{}. It doesn't check type
+assertions; errcheck's check-type-assertions setting reports the ones without
+an ok check.
 
 Acceptable uses:
 - json.Marshal/Unmarshal (stdlib necessity)
@@ -72,31 +76,27 @@ func run(pass *analysis.Pass) (any, error) {
 	nodeFilter := []ast.Node{
 		(*ast.FuncDecl)(nil),
 		(*ast.TypeSpec)(nil),
-		(*ast.TypeAssertExpr)(nil),
 	}
 
 	insp.Preorder(nodeFilter, func(n ast.Node) {
 		switch node := n.(type) {
 		case *ast.FuncDecl:
-			checkFuncDecl(reporter, node)
+			checkFuncDecl(pass, reporter, node)
 
 		case *ast.TypeSpec:
-			checkTypeSpec(reporter, node)
-
-		case *ast.TypeAssertExpr:
-			checkTypeAssertion(node)
+			checkTypeSpec(pass, reporter, node)
 		}
 	})
 
 	return nil, nil
 }
 
-func checkFuncDecl(reporter *nolint.Reporter, fn *ast.FuncDecl) {
+func checkFuncDecl(pass *analysis.Pass, reporter *nolint.Reporter, fn *ast.FuncDecl) {
 	// Check return types for interface{}
 	if fn.Type.Results != nil {
 		for _, field := range fn.Type.Results.List {
 			// Allow if function name suggests it's a wrapper/adapter
-			if !isEmptyInterface(field.Type) || isAllowedFuncName(fn.Name.Name) {
+			if !isEmptyInterface(pass, field.Type) || isAllowedFuncName(fn.Name.Name) {
 				continue
 			}
 			reporter.Reportf(field.Pos(),
@@ -105,22 +105,22 @@ func checkFuncDecl(reporter *nolint.Reporter, fn *ast.FuncDecl) {
 		}
 	}
 
-	// Check parameters - less strict, but flag map[string]interface{}
+	// Check parameters - less strict, but flag maps with interface{} values
 	if fn.Type.Params != nil {
 		for _, field := range fn.Type.Params.List {
-			if !isMapWithEmptyInterface(field.Type) {
+			if !isMapWithEmptyInterface(pass, field.Type) {
 				continue
 			}
 			for _, name := range field.Names {
 				reporter.Reportf(field.Pos(),
-					"parameter %q is map[string]interface{}; consider using a struct or typed map",
-					name.Name)
+					"parameter %q is %s; consider using a struct or typed map",
+					name.Name, types.ExprString(field.Type))
 			}
 		}
 	}
 }
 
-func checkTypeSpec(reporter *nolint.Reporter, ts *ast.TypeSpec) {
+func checkTypeSpec(pass *analysis.Pass, reporter *nolint.Reporter, ts *ast.TypeSpec) {
 	// Check struct fields
 	structType, ok := ts.Type.(*ast.StructType)
 	if !ok {
@@ -128,67 +128,48 @@ func checkTypeSpec(reporter *nolint.Reporter, ts *ast.TypeSpec) {
 	}
 
 	for _, field := range structType.Fields.List {
-		// Flag map[string]interface{} fields
-		if isMapWithEmptyInterface(field.Type) {
-			fieldNames := getFieldNames(field)
+		// Flag fields holding maps with interface{} values
+		if isMapWithEmptyInterface(pass, field.Type) {
 			reporter.Reportf(field.Pos(),
-				"field %q is map[string]interface{}; consider using a typed struct or wrapping with type-safe methods",
-				fieldNames)
+				"field %q is %s; consider using a typed struct or wrapping with type-safe methods",
+				getFieldNames(field), types.ExprString(field.Type))
 		}
 
-		// Flag []interface{} fields
-		if isSliceOfEmptyInterface(field.Type) {
-			fieldNames := getFieldNames(field)
+		// Flag fields holding slices or arrays of interface{}
+		if isSliceOfEmptyInterface(pass, field.Type) {
 			reporter.Reportf(field.Pos(),
-				"field %q is []interface{}; consider using a concrete slice type or generics",
-				fieldNames)
+				"field %q is %s; consider using a concrete element type or generics",
+				getFieldNames(field), types.ExprString(field.Type))
 		}
 	}
 }
 
-func checkTypeAssertion(_ *ast.TypeAssertExpr) {
-	// Type assertion checking is complex and requires parent context
-	// to determine if the ok pattern is used. This is left as a
-	// placeholder for future implementation.
-	//
-	// TODO(cedi): Implement proper type assertion checking by analyzing
-	// the parent assignment statement.
+// isEmptyInterface reports whether expr denotes interface{}, any, or an alias
+// of either. A defined type such as "type Value interface{}" is a deliberate
+// name for the empty interface and isn't reported.
+func isEmptyInterface(pass *analysis.Pass, expr ast.Expr) bool {
+	iface, ok := types.Unalias(pass.TypesInfo.TypeOf(expr)).(*types.Interface)
+	return ok && iface.Empty()
 }
 
-func isEmptyInterface(expr ast.Expr) bool {
-	switch t := expr.(type) {
-	case *ast.InterfaceType:
-		// interface{}
-		return t.Methods == nil || len(t.Methods.List) == 0
-
-	case *ast.Ident:
-		// any (Go 1.18+)
-		return t.Name == "any"
-
-	case *ast.SelectorExpr:
-		// Could be a type alias
-		return false
-	}
-
-	return false
-}
-
-func isMapWithEmptyInterface(expr ast.Expr) bool {
+func isMapWithEmptyInterface(pass *analysis.Pass, expr ast.Expr) bool {
 	mapType, ok := expr.(*ast.MapType)
 	if !ok {
 		return false
 	}
 
-	return isEmptyInterface(mapType.Value)
+	return isEmptyInterface(pass, mapType.Value)
 }
 
-func isSliceOfEmptyInterface(expr ast.Expr) bool {
+// isSliceOfEmptyInterface reports whether expr is a slice or an array of
+// interface{}.
+func isSliceOfEmptyInterface(pass *analysis.Pass, expr ast.Expr) bool {
 	arrayType, ok := expr.(*ast.ArrayType)
 	if !ok {
 		return false
 	}
 
-	return isEmptyInterface(arrayType.Elt)
+	return isEmptyInterface(pass, arrayType.Elt)
 }
 
 func isAllowedFuncName(name string) bool {

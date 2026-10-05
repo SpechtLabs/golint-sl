@@ -12,7 +12,13 @@ Clean Code
 
 ## What It Checks
 
-This analyzer detects uses of empty interface (`interface{}` or `any`) that could be replaced with concrete types or proper interfaces.
+This analyzer detects uses of empty interface (`interface{}` or `any`) that could be replaced with concrete types or proper interfaces:
+
+- Function results of type `interface{}` or `any`, except for functions whose names mark them as decoders, getters or wrappers (`Marshal`, `Unmarshal`, `Decode`, `Encode`, `Get`, `Load`, `Read`, `Parse`, `Convert`, `Wrap`, `Value`)
+- Parameters that are maps with `interface{}` values, such as `map[string]any`
+- Struct fields that are maps with `interface{}` values, or slices or arrays of `interface{}`
+
+An alias of `any` counts as the empty interface; a defined type such as `type Value interface{}` doesn't. The analyzer doesn't check type assertions: errcheck's `check-type-assertions` setting reports assertions without an `ok` check.
 
 ## Why It Matters
 
