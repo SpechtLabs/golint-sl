@@ -12,11 +12,14 @@ Kubernetes
 
 ## What It Checks
 
-This analyzer ensures reconciler functions follow Kubernetes controller patterns:
+This analyzer checks the `Reconcile` methods of types named like a `Reconciler`, `Controller` or `Operator`:
 
-- Proper error handling
-- Correct requeue behavior
-- Resource not found handling
+- the signature is `(ctx context.Context, req reconcile.Request) (reconcile.Result, error)`
+- a method that calls `client.Get` also handles not-found errors, with `apierrors.IsNotFound` or `client.IgnoreNotFound`, so a deleted object doesn't requeue
+- no direct HTTP calls (`net/http` functions and `http.Client` methods, wherever the client comes from) or database calls (`database/sql`, `sqlx`, `pgx`)
+- no locking of a package-level mutex, which shares state across concurrent reconciles; a mutex in a field of the reconciler is fine
+- no `time.Sleep` (use `RequeueAfter`), and a hint to inject a clock for `time.Now`
+- structured logging instead of `fmt.Print*` and `log.Print*`
 
 ## Why It Matters
 
