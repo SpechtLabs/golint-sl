@@ -2,6 +2,11 @@
 // mutex-protected struct cases.
 package a
 
+import (
+	"sync"
+	"sync/atomic"
+)
+
 // Good: a goroutine outside any function declaration has no enclosing locals.
 var _ = func() int {
 	go func() {}()
@@ -132,4 +137,315 @@ func suppressedCapture() {
 	go func() {
 		m["a"] = 1 //nolint:syncaccess
 	}()
+}
+
+// Good: the goroutine takes a lock around the map write.
+func lockedCapture() {
+	var mu sync.Mutex
+	m := make(map[string]int)
+	go func() {
+		mu.Lock()
+		m["a"] = 1
+		mu.Unlock()
+	}()
+	mu.Lock()
+	m["b"] = 2
+	mu.Unlock()
+}
+
+// Good: a read lock through a pointer, and a lock through a sync.Locker.
+func readLockedCapture(mu *sync.RWMutex, l sync.Locker) {
+	s := make([]int, 1)
+	go func() {
+		mu.RLock()
+		defer mu.RUnlock()
+		use(s[0])
+	}()
+	p := &point{}
+	go func() {
+		l.Lock()
+		defer l.Unlock()
+		p.x = 1
+	}()
+}
+
+// Good: the goroutine declares its own variable with the outer one's name.
+func shadowedCapture() {
+	m := make(map[string]int)
+	go func() {
+		m := map[string]int{}
+		m["a"] = 1
+	}()
+	m["b"] = 2
+}
+
+type holder struct{ data []int }
+
+// Good: a field selector that shares a local variable's name is not the
+// local variable.
+func fieldNamedLikeLocal(t *holder) {
+	data := make([]int, 1)
+	go func() {
+		t.data = nil
+	}()
+	data[0] = 1
+}
+
+// Good: from Go 1.22 on, a variable the for clause declares is a new
+// variable in every iteration (oldloop.go holds the Go 1.21 cases).
+func perIterationLoopVars(xs []int) {
+	for i := 0; i < 3; i++ {
+		go func() {
+			use(i)
+		}()
+	}
+	for k, v := range xs {
+		go func() {
+			use(k, v)
+		}()
+	}
+}
+
+// Bad: a counter the goroutine increments while the function still reads it.
+func unprotectedCounter() {
+	var count int
+	go func() {
+		count++ // want `shared variable "count" captured by goroutine without synchronization`
+	}()
+	use(count)
+}
+
+// Bad: a map parameter written by the goroutine and by the function.
+func mapParam(m map[string]int) {
+	go func() {
+		m["a"] = 1 // want `shared variable "m" captured by goroutine without synchronization`
+	}()
+	m["b"] = 2
+}
+
+// Bad: deleting from a map parameter is a write too.
+func mapParamDelete(m map[string]int) {
+	go func() {
+		delete(m, "a") // want `shared variable "m" captured by goroutine`
+	}()
+	use(len(m))
+}
+
+// Bad: a later assignment doesn't change the kind the declaration gave.
+func reassignedMap() {
+	m := make(map[string]int)
+	go func() {
+		m["a"] = 1 // want `shared variable "m" captured by goroutine`
+	}()
+	m = nil
+	use(m)
+}
+
+// Bad: the goroutines of every iteration write the same variable.
+func loopAccumulator(xs []int) {
+	total := 0
+	for _, x := range xs {
+		go func() {
+			total += x // want `shared variable "total" captured by goroutine`
+		}()
+	}
+}
+
+// Bad: the function uses the variable in the next iteration of the loop.
+func loopReadBeforeGo(xs []int) {
+	var last int
+	for _, x := range xs {
+		use(last)
+		go func(x int) {
+			last = x // want `shared variable "last" captured by goroutine`
+		}(x)
+	}
+}
+
+// Good: the function waits for the goroutine before reading the result.
+func waitGroupResult() int {
+	var wg sync.WaitGroup
+	var result int
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		result = 42
+	}()
+	wg.Wait()
+	return result
+}
+
+// Good: closing a channel orders the write before the read.
+func channelResult() int {
+	done := make(chan struct{})
+	var result int
+	go func() {
+		result = 42
+		close(done)
+	}()
+	<-done
+	return result
+}
+
+// Good: a call through a function value may synchronize.
+func callbackResult(done func()) int {
+	var result int
+	go func() {
+		result = 42
+		done()
+	}()
+	return result
+}
+
+// Good: the function doesn't use the variable after starting the goroutine.
+func writtenOnlyByGoroutine() {
+	count := 0
+	count++
+	go func() {
+		count++
+		use(count)
+	}()
+}
+
+// Good: a slice parameter only read, by the goroutine and by the function.
+func readOnlyParam(xs []int) {
+	go func() {
+		use(xs[0])
+	}()
+	use(xs[1])
+}
+
+// Bad: a range clause inside the goroutine assigns the captured variable.
+func rangeAssignInGoroutine(xs []int) {
+	var last int
+	go func() {
+		for _, last = range xs { // want `shared variable "last" captured by goroutine`
+		}
+	}()
+	use(last)
+}
+
+// Bad: a conversion is not synchronization, and a loop without an init
+// statement declares no loop variable.
+func conversionInLoop(n int) {
+	var f float64
+	for n > 0 {
+		go func() {
+			f = float64(n) // want `shared variable "f" captured by goroutine`
+		}()
+		n--
+	}
+	for k := range n {
+		go func() {
+			f = float64(k) // want `shared variable "f" captured by goroutine`
+		}()
+	}
+	use(f)
+}
+
+var packageCounter int
+
+// Good: package-level variables are not captured locals.
+func packageLevel() {
+	go func() {
+		packageCounter++
+	}()
+	use(packageCounter)
+}
+
+// Good: receiving from a channel synchronizes.
+func receiveResult(start <-chan struct{}) int {
+	var result int
+	go func() {
+		<-start
+		result = 1
+	}()
+	return result
+}
+
+// Good: ranging over a channel synchronizes.
+func rangeChannelResult(in <-chan int) int {
+	var result int
+	go func() {
+		for v := range in {
+			result = v
+		}
+	}()
+	return result
+}
+
+// Good: an atomic operation synchronizes.
+func atomicResult(flag *atomic.Bool) int {
+	var result int
+	go func() {
+		result = 1
+		flag.Store(true)
+	}()
+	return result
+}
+
+// Good: goroutines that are waited for write distinct slice elements.
+func fanOutSlice(xs []int) []int {
+	var wg sync.WaitGroup
+	out := make([]int, len(xs))
+	for i, x := range xs {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			out[i] = x * 2
+		}()
+	}
+	wg.Wait()
+	return out
+}
+
+// Good: a declared slice only read by a goroutine the function waits for.
+func waitedReader(xs []int) {
+	var roots []int
+	roots = append(roots, xs...)
+	done := make(chan struct{})
+	go func() {
+		use(roots)
+		close(done)
+	}()
+	<-done
+}
+
+// Bad: the goroutines of a loop write the same map, even though the function
+// waits for them.
+func fanOutMap(xs []string) map[string]int {
+	var wg sync.WaitGroup
+	counts := map[string]int{}
+	for _, x := range xs {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			counts[x]++ // want `shared variable "counts" captured by goroutine`
+		}()
+	}
+	wg.Wait()
+	return counts
+}
+
+// Good: a value a method call returns is not tracked as a reference, nor is
+// a var declaration initialized without an explicit type.
+func untypedInitializers() {
+	got := (&plain{n: 1}).Get()
+	var out = make([]int, 1)
+	go func() {
+		use(got, out)
+	}()
+}
+
+// Bad: a function literal the goroutine calls is inspected, not assumed to
+// synchronize.
+func deferredRecover() {
+	var count int
+	go func() {
+		defer func() {
+			_ = recover()
+		}()
+		count++ // want `shared variable "count" captured by goroutine`
+	}()
+	use(count)
 }

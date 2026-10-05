@@ -14,9 +14,29 @@ Safety
 
 This analyzer detects:
 
-- Unsynchronized access to shared variables
-- Missing mutex locks
-- Potential race conditions
+- Goroutines that use a map, slice, array or pointer the enclosing function
+  declared, when the goroutine doesn't synchronize
+- Goroutines that don't synchronize and assign a local variable or parameter
+  (or, for a map, write or delete an element) while the enclosing function
+  still uses it after the `go` statement, or while the same `go` statement
+  runs again in a loop
+- Maps that the goroutines a loop starts write without taking a lock, even
+  when they otherwise synchronize (for example with a `sync.WaitGroup`)
+- Loop variables that every iteration shares and a goroutine captures. From
+  Go 1.22 on, a variable the `for` clause declares is a new variable in every
+  iteration, so only loops that assign a variable declared outside them are
+  reported there. In a file whose language version is older, a variable the
+  `for` clause declares is reported too.
+- Methods of a struct with a mutex field that access the struct's fields
+  without calling `Lock` or `RLock`
+
+A goroutine synchronizes when it takes a lock (`Lock` or `RLock` of a `sync`
+type or a `sync.Locker`), uses a channel, calls any other function of `sync`
+or `sync/atomic`, or calls a function value or an interface method, which
+might do any of these. A goroutine that takes a lock is never reported for
+sharing a variable. Variables are matched by identity, so a
+goroutine's own variable that shadows an outer one, or a field that shares a
+local variable's name, is not a capture.
 
 ## Why It Matters
 
