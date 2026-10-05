@@ -127,10 +127,6 @@ linters:
         text: '^pkgnaming: type (contextlogger\.ContextLoggerInfo|contextpropagation\.ContextPropagationInfo|lifecycle\.LifecycleInfo|reconciler\.ReconcilerInfo) stutters'
       - linters:
           - golint-sl
-        text: '^mockverify: mock "MockInfo"'
-        path: ^mockverify/
-      - linters:
-          - golint-sl
         text: '^optionspattern: function "AnalyzeOptionPatterns"'
         path: ^optionspattern/
 

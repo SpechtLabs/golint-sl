@@ -10,8 +10,11 @@ package mockverify
 
 import (
 	"go/ast"
+	"go/types"
 	"path/filepath"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/analysis/passes/inspect"
@@ -34,8 +37,12 @@ preventing issues like:
 - Interface signature changes breaking tests silently
 - Incomplete mock implementations
 
-The analyzer checks files in mock/ directories or files named *_mock.go
-and ensures they have the verification pattern.`
+The analyzer checks the package-level struct types whose name contains Mock,
+Fake or Stub as a word (MockStore, StoreFake, but not Stubborn), declared in
+files in a mock/ directory or in files named *_mock.go or mock_*.go. Any
+blank-identifier declaration in the package whose value has the mock's type
+or a pointer to it counts as the verification: &Mock{}, Mock{}, new(Mock)
+and (*Mock)(nil) all do.`
 
 // Analyzer reports mock types that lack a compile-time interface assertion.
 var Analyzer = &analysis.Analyzer{
@@ -56,63 +63,48 @@ func run(pass *analysis.Pass) (any, error) {
 	reporter := nolint.NewReporter(pass)
 	insp := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
 
-	// Track mock structs and their interface verifications
-	mockStructs := make(map[string]bool)       // mock name -> true
-	verifiedMocks := make(map[string]bool)     // mock name -> has verification
-	mockPositions := make(map[string]ast.Node) // mock name -> position for reporting
-
-	nodeFilter := []ast.Node{
-		(*ast.File)(nil),
-		(*ast.GenDecl)(nil),
-		(*ast.TypeSpec)(nil),
-	}
-
-	// Collect all mock structs and interface verifications
-	insp.Preorder(nodeFilter, func(n ast.Node) {
-		switch node := n.(type) {
-		case *ast.File:
-			filename := pass.Fset.Position(node.Pos()).Filename
-
-			// Only check mock files
-			if !isMockFile(filename) {
-				return
-			}
-
-		case *ast.GenDecl:
-			// Check for var _ Interface = &Mock{} pattern
-			for _, spec := range node.Specs {
-				if vs, ok := spec.(*ast.ValueSpec); ok {
-					checkInterfaceVerification(vs, verifiedMocks)
-				}
-			}
-
-		case *ast.TypeSpec:
-			// Check if this is a mock struct
-			if _, ok := node.Type.(*ast.StructType); ok && isMockName(node.Name.Name) {
-				mockStructs[node.Name.Name] = true
-				mockPositions[node.Name.Name] = node
-			}
-		}
+	// The verification may live in any file of the package; the mock itself
+	// is only checked when a mock file declares it.
+	verifiedMocks := make(map[string]bool)
+	insp.Preorder([]ast.Node{(*ast.ValueSpec)(nil)}, func(n ast.Node) {
+		checkInterfaceVerification(pass, n.(*ast.ValueSpec), verifiedMocks)
 	})
 
-	// Report mocks without verification
-	for mockName := range mockStructs {
-		if !verifiedMocks[mockName] {
-			if pos, ok := mockPositions[mockName]; ok {
-				reporter.Reportf(pos.Pos(),
-					"mock %q should have compile-time interface verification: var _ InterfaceName = &%s{}",
-					mockName, mockName)
-			}
+	for _, file := range pass.Files {
+		if isMockFile(pass.Fset.Position(file.Pos()).Filename) {
+			reportUnverifiedMocks(reporter, file, verifiedMocks)
 		}
 	}
 
 	return nil, nil
 }
 
+// reportUnverifiedMocks reports the package-level mock structs file declares
+// that no verification in the package covers.
+func reportUnverifiedMocks(reporter *nolint.Reporter, file *ast.File, verifiedMocks map[string]bool) {
+	for _, decl := range file.Decls {
+		gen, ok := decl.(*ast.GenDecl)
+		if !ok {
+			continue
+		}
+		for _, spec := range gen.Specs {
+			ts, ok := spec.(*ast.TypeSpec)
+			if !ok || !isMockStruct(ts) || verifiedMocks[ts.Name.Name] {
+				continue
+			}
+			reporter.Reportf(ts.Pos(),
+				"mock %q should have compile-time interface verification: var _ InterfaceName = &%s{}",
+				ts.Name.Name, ts.Name.Name)
+		}
+	}
+}
+
 // isMockFile checks if a file is a mock file based on path or name
 func isMockFile(filename string) bool {
+	filename = filepath.ToSlash(filename)
+
 	// Check if in mock directory
-	dir := filepath.Dir(filename)
+	dir := filepath.ToSlash(filepath.Dir(filename))
 	if strings.HasSuffix(dir, "/mock") || strings.Contains(dir, "/mock/") {
 		return true
 	}
@@ -126,11 +118,30 @@ func isMockFile(filename string) bool {
 	return false
 }
 
-// isMockName checks if a type name indicates a mock
+// isMockStruct reports whether ts declares a struct type with a mock name.
+func isMockStruct(ts *ast.TypeSpec) bool {
+	_, ok := ts.Type.(*ast.StructType)
+	return ok && isMockName(ts.Name.Name)
+}
+
+// isMockName reports whether one of MockNamePatterns is a whole word of the
+// camel-case name: MockStore and StoreFake are mock names, Stubborn and
+// Mockingbird are not.
 func isMockName(name string) bool {
 	for _, pattern := range MockNamePatterns {
-		if strings.Contains(name, pattern) {
-			return true
+		for i := 0; i < len(name); {
+			idx := strings.Index(name[i:], pattern)
+			if idx < 0 {
+				break
+			}
+			end := i + idx + len(pattern)
+			if end == len(name) {
+				return true
+			}
+			if next, _ := utf8.DecodeRuneInString(name[end:]); !unicode.IsLower(next) {
+				return true
+			}
+			i = end
 		}
 	}
 	return false
@@ -138,7 +149,7 @@ func isMockName(name string) bool {
 
 // checkInterfaceVerification checks if a var spec is an interface verification
 // Pattern: var _ Interface = &Mock{}
-func checkInterfaceVerification(vs *ast.ValueSpec, verifiedMocks map[string]bool) {
+func checkInterfaceVerification(pass *analysis.Pass, vs *ast.ValueSpec, verifiedMocks map[string]bool) {
 	// Must have blank identifier
 	if len(vs.Names) != 1 || vs.Names[0].Name != "_" {
 		return
@@ -149,34 +160,34 @@ func checkInterfaceVerification(vs *ast.ValueSpec, verifiedMocks map[string]bool
 		return
 	}
 
-	// Value should be &MockType{} or (*MockType)(nil)
-	switch v := vs.Values[0].(type) {
-	case *ast.UnaryExpr:
-		// &Mock{}
-		if v.Op.String() != "&" {
-			return
-		}
-		if composite, ok := v.X.(*ast.CompositeLit); ok {
-			markVerifiedMock(composite.Type, verifiedMocks)
-		}
-
-	case *ast.CallExpr:
-		// (*Mock)(nil)
-		paren, ok := v.Fun.(*ast.ParenExpr)
-		if !ok {
-			return
-		}
-		if star, ok := paren.X.(*ast.StarExpr); ok {
-			markVerifiedMock(star.X, verifiedMocks)
-		}
+	// The value's type decides, so &Mock{}, Mock{}, new(Mock), (*Mock)(nil)
+	// and instances of generic mocks such as &Mock[int]{} all count.
+	if name, ok := verifiedMockName(pass, vs.Values[0]); ok {
+		verifiedMocks[name] = true
 	}
 }
 
-// markVerifiedMock records typ as verified when it names a mock type
-func markVerifiedMock(typ ast.Expr, verifiedMocks map[string]bool) {
-	if ident, ok := typ.(*ast.Ident); ok && isMockName(ident.Name) {
-		verifiedMocks[ident.Name] = true
+// verifiedMockName returns the name of the mock type declared in this package
+// that value has, directly or through a pointer.
+func verifiedMockName(pass *analysis.Pass, value ast.Expr) (string, bool) {
+	t := pass.TypesInfo.TypeOf(value)
+	if t == nil {
+		return "", false
 	}
+	if ptr, ok := types.Unalias(t).(*types.Pointer); ok {
+		t = ptr.Elem()
+	}
+	named, ok := types.Unalias(t).(*types.Named)
+	if !ok {
+		return "", false
+	}
+
+	// Obj of an instantiated generic type is the generic declaration's.
+	obj := named.Obj()
+	if obj.Pkg() != pass.Pkg || !isMockName(obj.Name()) {
+		return "", false
+	}
+	return obj.Name(), true
 }
 
 // MockInfo contains information about mocks in a package
@@ -195,21 +206,17 @@ func AnalyzeMocks(pass *analysis.Pass) *MockInfo {
 	verifiedMocks := make(map[string]bool)
 
 	nodeFilter := []ast.Node{
-		(*ast.GenDecl)(nil),
+		(*ast.ValueSpec)(nil),
 		(*ast.TypeSpec)(nil),
 	}
 
 	insp.Preorder(nodeFilter, func(n ast.Node) {
 		switch node := n.(type) {
-		case *ast.GenDecl:
-			for _, spec := range node.Specs {
-				if vs, ok := spec.(*ast.ValueSpec); ok {
-					checkInterfaceVerification(vs, verifiedMocks)
-				}
-			}
+		case *ast.ValueSpec:
+			checkInterfaceVerification(pass, node, verifiedMocks)
 
 		case *ast.TypeSpec:
-			if _, ok := node.Type.(*ast.StructType); ok && isMockName(node.Name.Name) {
+			if isMockStruct(node) {
 				mockStructs[node.Name.Name] = true
 				info.Mocks = append(info.Mocks, node.Name.Name)
 			}

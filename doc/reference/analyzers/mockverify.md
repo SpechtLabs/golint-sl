@@ -14,6 +14,8 @@ Testability
 
 This analyzer detects mock implementations that don't verify they implement their interface at compile time.
 
+It checks the package-level struct types whose name contains `Mock`, `Fake` or `Stub` as a whole word (`MockStorage`, `StorageFake`, but not `Stubborn`), declared in a `mock/` directory or in a file named `*_mock.go` or `mock_*.go`. A blank-identifier declaration anywhere in the package whose value has the mock's type, or a pointer to it, is the verification: `&MockStorage{}`, `MockStorage{}`, `new(MockStorage)` and `(*MockStorage)(nil)` all count, as do instances of a generic mock such as `&MockStorage[int]{}`.
+
 ## Why It Matters
 
 Without compile-time verification, interface changes don't cause compilation errors in mocks. Tests pass with incomplete mocks, then fail mysteriously at runtime.

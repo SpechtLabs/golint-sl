@@ -1,5 +1,5 @@
 // Package a holds the interfaces the mocks implement. This file is not a
-// mock file, so it declares no mock-named structs.
+// mock file, so the mocks live in the other files.
 package a
 
 import "fmt"
@@ -10,19 +10,31 @@ type Plain struct{}
 
 func (Plain) Do() {}
 
-func (*MockVerified) Do()    {}
-func (*FakePtrVerified) Do() {}
-func (*MockUnverified) Do()  {}
-func (*StubSuppressed) Do()  {}
-func (*MockOtherFile) Do()   {}
-func (*MockBlankMulti) Do()  {}
-func (*MockNamedVar) Do()    {}
+func (*MockVerified) Do()      {}
+func (*FakePtrVerified) Do()   {}
+func (*MockUnverified) Do()    {}
+func (*StubSuppressed) Do()    {}
+func (*MockOtherFile) Do()     {}
+func (*MockBlankMulti) Do()    {}
+func (*MockNamedVar) Do()      {}
+func (MockValue) Do()          {}
+func (*MockNew) Do()           {}
+func (*MockGeneric[T]) Do()    {}
+func (*FakeGenericPtr[T]) Do() {}
 
 // Good: the composite-literal verification for a mock in a_mock.go.
 var _ Service = &MockVerified{}
 
 // Good: the typed-nil verification for a mock in a_mock.go.
 var _ Service = (*FakePtrVerified)(nil)
+
+// Good: a value, new and generic instances verify their mocks too.
+var (
+	_ Service = MockValue{}
+	_ Service = new(MockNew)
+	_ Service = &MockGeneric[int]{}
+	_ Service = (*FakeGenericPtr[string])(nil)
+)
 
 // Not verifications: none of these mark a mock as verified.
 var (

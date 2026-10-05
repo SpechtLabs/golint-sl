@@ -25,3 +25,26 @@ type MockFunc func()
 
 // Good: the verification can live in another file of the package.
 type MockOtherFile struct{}
+
+// Good: Stub, Mock and Fake are only mock names as whole words, so neither
+// Stubborn, Mockingbird nor Fakeable is a mock.
+type StubbornWorker2 struct{}
+
+type Mockingbird struct{}
+
+type Fakeable struct{}
+
+// Bad: Fake as the trailing word is a mock name too.
+type StoreFake struct{} // want `mock "StoreFake" should have compile-time interface verification`
+
+// Good: verified with var _ Service = MockValue{} in a.go.
+type MockValue struct{}
+
+// Good: verified with var _ Service = new(MockNew) in a.go.
+type MockNew struct{}
+
+// Good: verified with var _ Service = &MockGeneric[int]{} in a.go.
+type MockGeneric[T any] struct{ v T }
+
+// Good: verified with var _ Service = (*FakeGenericPtr[string])(nil) in a.go.
+type FakeGenericPtr[T any] struct{ v T }
