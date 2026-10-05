@@ -1,7 +1,4 @@
 // Package a holds the main sentinelerrors cases.
-//
-// Package-level sentinels (var ErrX = errors.New(...)) are left out on
-// purpose: the analyzer reports them today, which contradicts its own Doc.
 package a
 
 import (
@@ -11,6 +8,18 @@ import (
 )
 
 const constMessage = "constant message"
+
+// Good: a package-level sentinel declared before any function.
+var ErrFirst = errors.New("first")
+
+// Good: a grouped block of package-level sentinels.
+var (
+	ErrNotFound     = errors.New("item not found")
+	ErrInvalidInput = errors.New("invalid input")
+)
+
+// Good: a package-level fmt.Errorf is a sentinel too.
+var ErrPlain = fmt.Errorf("plain sentinel")
 
 type store struct{}
 
@@ -88,4 +97,13 @@ func helper() {}
 // Good: suppressed with a nolint directive.
 func Suppressed() error {
 	return errors.New("suppressed") //nolint:sentinelerrors
+}
+
+// Good: a package-level sentinel declared after a function is not attributed
+// to that function.
+var ErrAfter = errors.New("after")
+
+// Bad: a function declared after the package-level sentinels is still checked.
+func Late() error {
+	return errors.New("late") // want `inline errors.New\(\) in function "Late"`
 }
