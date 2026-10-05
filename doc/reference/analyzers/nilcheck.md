@@ -12,7 +12,13 @@ Safety
 
 ## What It Checks
 
-This analyzer detects pointer parameters that are used without being checked for nil first.
+This analyzer detects pointer parameters that are dereferenced (a field access or method call, `*p`, or `p[i]`) where they aren't known to be non-nil. A use is known to be non-nil when it comes:
+
+- inside an `if` whose condition rules nil out: `if p != nil { ... }`, the `else` of `if p == nil { ... }`, and `&&` and `||` combinations of those
+- on the right of `p != nil &&` or `p == nil ||` in the same condition
+- after an `if` whose condition holds whenever `p` is nil and whose body returns, panics, exits (`os.Exit`, `log.Fatal`, `t.Fatal`), breaks out of a loop, or assigns `p`
+
+A nil check after the use, or one whose body only logs and falls through, doesn't count. Interface and type-parameter parameters are not pointers and are not checked.
 
 ## Why It Matters
 
@@ -79,8 +85,10 @@ The analyzer skips certain types that are guaranteed non-nil by their frameworks
 - `*testing.T`, `*testing.B`, `*testing.M`
 - `*gin.Context`, `*gin.Engine`
 - `*cobra.Command`
-- `*http.Request`, `http.ResponseWriter`
-- `context.Context`
+- `*http.Request`, `*http.Response`
+- `*zap.Logger`, `*log.Logger`, `*grpc.ClientConn`, `*rest.Config` and a few more
+
+It also skips parameters with names that are framework-provided by convention, such as `ctx`, `r`, `w`, `t`, `cfg` and `opts`.
 
 ## Skipped Files
 
