@@ -82,6 +82,7 @@ build:
           - '.custom-gcl.yml'
           - '.pre-commit-config.yaml'
           - '.pre-commit-hooks.yaml'
+          - 'hooks/**'
           - '.markdownlint-cli2.yaml'
           - '.yamllint.yaml'
           - '.editorconfig'

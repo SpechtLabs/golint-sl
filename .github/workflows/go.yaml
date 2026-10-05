@@ -71,9 +71,9 @@ jobs:
           key: custom-gcl-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.custom-gcl.yml', '.mise.toml', 'go.mod', 'go.sum', '**/*.go') }}
 
       # Builds ./custom-gcl (golangci-lint + golint-sl) and runs it, along with
-      # yamllint and actionlint. The golint-sl plugin and the gofmt/goimports
-      # formatters are both applied here, and the example config is checked
-      # to load the plugin.
+      # yamllint, actionlint and shellcheck. The golint-sl plugin and the
+      # gofmt/goimports formatters are both applied here, and the example
+      # config is checked to load the plugin.
       - name: Lint
         if: steps.custom-gcl-cache.outputs.cache-hit != 'true'
         run: |
@@ -89,6 +89,7 @@ jobs:
           chmod +x ./custom-gcl
           mise run go-lint
           mise run yaml-lint
+          mise run shell-lint
           echo "::add-matcher::.github/actionlint-matcher.json"
           mise run actionlint
 

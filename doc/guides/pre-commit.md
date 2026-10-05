@@ -48,8 +48,8 @@ golint-sl provides two hooks:
 
 | Hook ID | Description | Speed |
 |---------|-------------|-------|
-| `golint-sl` | Builds `custom-gcl` and runs on all packages (`./...`) | Thorough |
-| `golint-sl-pkg` | Builds `custom-gcl` and runs only on changed packages | Fast |
+| `golint-sl` | Builds `custom-gcl` and runs it on every package of every Go module | Thorough |
+| `golint-sl-pkg` | Builds `custom-gcl` and runs it only on the packages of the changed files | Fast |
 
 For large repositories, use `golint-sl-pkg` for faster feedback:
 
@@ -62,8 +62,16 @@ repos:
 ```
 
 ::: tip
-The hooks require `golangci-lint` to be installed and available in your `PATH`. The custom binary is built automatically during the hook run.
+The hooks run `golangci-lint` from your `PATH`, or through [mise](https://mise.jdx.dev/) when it isn't on your `PATH` but your project pins it in mise. The custom binary is built automatically during the hook run.
 :::
+
+### Repositories with Several Go Modules
+
+The hooks build `custom-gcl` from the `.custom-gcl.yml` at the repository root and then run it inside each Go module: the module at the root, if there is one, and every module in a subdirectory. A repository with modules only in subdirectories and no `go.mod` at the root works the same way. Modules under `testdata`, `vendor`, and directories starting with `.` or `_` are skipped, as `go` skips them.
+
+Each module is linted from its own directory, so golangci-lint uses the nearest `.golangci.yml` at or above it. To share one configuration between modules, put it at the repository root; with golangci-lint's default `run.relative-path-mode: cfg`, its exclusion paths stay relative to that file, so they start with the module's directory.
+
+`golint-sl-pkg` groups the changed files by module and lints each module's changed packages in one run. Files outside every module are skipped.
 
 ### Running Manually
 
@@ -217,14 +225,14 @@ ls -la .git/hooks/pre-commit
 
 ### golangci-lint Not Found
 
-The hook requires golangci-lint to be installed:
+The hooks need golangci-lint, at the version in your `.custom-gcl.yml`, on your `PATH` or pinned with mise:
 
 ```bash
 # Check installation
 which golangci-lint
 
-# Install if needed
-curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(go env GOPATH)/bin v2.8.0
+# Pin it for the project with mise
+mise use golangci-lint@2.14.0
 ```
 
 ### Too Slow
