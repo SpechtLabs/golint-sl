@@ -18,10 +18,18 @@ import (
 const Doc = `enforce consistent functional options pattern usage
 
 This analyzer ensures:
-1. Constructor functions (New*) with many config parameters use functional options
-2. Option types are defined as 'type Option func(*T)' pattern
-3. Option functions are prefixed with 'With'
-4. Options files follow naming convention (options.go)
+1. Constructor functions (New*) with more than 4 parameters use functional options
+2. Types named *Option are defined as 'type Option func(*T)' (an interface
+   with an apply method, as in zap and gRPC, is accepted too)
+3. Exported functions returning a functional option type are prefixed with
+   With, Allow, Enable, Disable or Set (Default* functions are exempt). A
+   functional option type is a named *Option type whose underlying type is a
+   one-parameter function or an interface with an apply method; an Options
+   config struct is not one.
+4. Exported functions prefixed with With return an option (or a type whose
+   name mentions Option, such as Options or []Option), unless they are
+   builder methods returning their receiver type or take and return a
+   context.Context
 
 The functional options pattern provides a clean, extensible API for configuration.`
 
@@ -74,11 +82,11 @@ func run(pass *analysis.Pass) (any, error) {
 	insp.Preorder(nodeFilter, func(n ast.Node) {
 		switch node := n.(type) {
 		case *ast.TypeSpec:
-			checkOptionTypeDefinition(reporter, node)
+			checkOptionTypeDefinition(reporter, pass, node)
 
 		case *ast.FuncDecl:
 			checkConstructorPattern(reporter, node, optionTypes)
-			checkOptionFunctionNaming(reporter, node, optionTypes)
+			checkOptionFunctionNaming(reporter, pass, node)
 		}
 	})
 
@@ -86,9 +94,16 @@ func run(pass *analysis.Pass) (any, error) {
 }
 
 // checkOptionTypeDefinition ensures Option types follow the pattern
-func checkOptionTypeDefinition(reporter *nolint.Reporter, ts *ast.TypeSpec) {
-	// Check if this looks like an Option type
-	if !strings.HasSuffix(ts.Name.Name, "Option") && ts.Name.Name != "Option" {
+func checkOptionTypeDefinition(reporter *nolint.Reporter, pass *analysis.Pass, ts *ast.TypeSpec) {
+	// Check if this looks like an Option type. An alias (type Option =
+	// other.Option) is checked where the aliased type is defined.
+	if !strings.HasSuffix(ts.Name.Name, "Option") || ts.Assign.IsValid() {
+		return
+	}
+
+	// An interface with an apply method is the other common shape of a
+	// functional option (zap.Option, grpc.DialOption).
+	if obj := pass.TypesInfo.Defs[ts.Name]; obj != nil && isApplyInterface(obj.Type().Underlying()) {
 		return
 	}
 
@@ -183,7 +198,7 @@ func checkConstructorPattern(reporter *nolint.Reporter, fn *ast.FuncDecl, option
 }
 
 // checkOptionFunctionNaming ensures option functions that return Option types are properly named
-func checkOptionFunctionNaming(reporter *nolint.Reporter, fn *ast.FuncDecl, optionTypes map[string]bool) {
+func checkOptionFunctionNaming(reporter *nolint.Reporter, pass *analysis.Pass, fn *ast.FuncDecl) {
 	if fn.Name == nil || fn.Type.Results == nil {
 		return
 	}
@@ -202,10 +217,7 @@ func checkOptionFunctionNaming(reporter *nolint.Reporter, fn *ast.FuncDecl, opti
 
 	// Check functions that return Option types
 	for _, result := range fn.Type.Results.List {
-		resultType := types.ExprString(result.Type)
-
-		isOptionReturn := strings.Contains(resultType, "Option") || optionTypes[resultType]
-		if !isOptionReturn {
+		if !isOptionType(pass.TypesInfo.TypeOf(result.Type)) {
 			continue
 		}
 
@@ -224,8 +236,9 @@ func checkOptionFunctionNaming(reporter *nolint.Reporter, fn *ast.FuncDecl, opti
 	if strings.HasPrefix(name, "With") {
 		returnsOption := false
 		for _, result := range fn.Type.Results.List {
-			resultType := types.ExprString(result.Type)
-			if strings.Contains(resultType, "Option") || optionTypes[resultType] {
+			// Lenient on purpose: an Options config struct or a slice of
+			// options is not an option, but With is a fine name for those.
+			if isOptionType(pass.TypesInfo.TypeOf(result.Type)) || strings.Contains(types.ExprString(result.Type), "Option") {
 				returnsOption = true
 				break
 			}
@@ -249,6 +262,42 @@ func checkOptionFunctionNaming(reporter *nolint.Reporter, fn *ast.FuncDecl, opti
 				name)
 		}
 	}
+}
+
+// isOptionType reports whether t is a functional option type: a named type
+// whose name ends in Option and whose underlying type is either a function
+// with one parameter (type Option func(*config)) or an interface with an
+// apply method (type Option interface{ apply(*config) }). Other types whose
+// name merely contains Option, such as an Options config struct, are not.
+func isOptionType(t types.Type) bool {
+	named, ok := types.Unalias(t).(*types.Named)
+	if !ok || !strings.HasSuffix(named.Obj().Name(), "Option") {
+		return false
+	}
+
+	switch u := named.Underlying().(type) {
+	case *types.Signature:
+		return u.Params().Len() == 1
+	case *types.Interface:
+		return isApplyInterface(u)
+	}
+	return false
+}
+
+// isApplyInterface reports whether t is an interface with an apply (or
+// Apply) method taking one parameter.
+func isApplyInterface(t types.Type) bool {
+	iface, ok := t.(*types.Interface)
+	if !ok {
+		return false
+	}
+	for method := range iface.Methods() {
+		name := method.Name()
+		if (name == "apply" || name == "Apply") && method.Signature().Params().Len() == 1 {
+			return true
+		}
+	}
+	return false
 }
 
 // hasValidOptionPrefix checks if a function name starts with any valid option prefix

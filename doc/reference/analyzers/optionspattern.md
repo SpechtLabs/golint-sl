@@ -24,6 +24,8 @@ This analyzer encourages the functional options pattern for types with many conf
 - `Disable*` (e.g., `DisableCache`, `DisableRetry`)
 - `Set*` (e.g., `SetTimeout`, `SetMaxRetries`)
 
+**Option Types:** An Option type is a named type whose name ends in `Option` and whose underlying type is either a function with one parameter (`type ServerOption func(*Server)`) or an interface with an `apply` method (`type DialOption interface{ apply(*dialOptions) }`, the shape zap and gRPC use). Types that only mention Option in their name, such as an `Options` config struct, are not Option types, so `ParseOptions(s string) (*Options, error)` needs no option prefix.
+
 **Exemptions:**
 
 - Private functions (lowercase first letter) are not checked
