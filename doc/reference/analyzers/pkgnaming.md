@@ -12,7 +12,7 @@ Architecture
 
 ## What It Checks
 
-This analyzer detects package names that cause "stutter" when used with their exported symbols.
+This analyzer detects package names that cause "stutter" when used with their exported symbols. Only exported package-level types and functions are checked: unexported and function-local names never appear behind the package qualifier, so they can't stutter.
 
 ## Why It Matters
 

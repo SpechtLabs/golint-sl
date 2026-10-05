@@ -26,3 +26,17 @@ func userLookup() {}
 
 // Good: suppressed by nolint.
 type UserStore struct{} //nolint:pkgnaming
+
+// Good: callers never write user.userState, so an unexported type can't
+// stutter.
+type userState struct{}
+
+// Good: a function-local type is invisible outside the function, exported
+// name or not.
+func localTypes() {
+	type userLocal struct{}
+	type UserLocal struct{}
+	_ = userLocal{}
+	_ = UserLocal{}
+	_ = userState{}
+}
