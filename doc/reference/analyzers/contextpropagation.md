@@ -14,6 +14,17 @@ Observability
 
 This analyzer detects functions that receive a context but don't pass it to callees that need it.
 
+A context counts as passed on when the parameter, or a local copy of it
+(`c := ctx`), is an argument of a call; derived contexts such as
+`context.WithTimeout(ctx, d)` pass it on too. In a function with a context,
+`Query`, `QueryRow`, `Exec`, `Prepare` and `Begin` calls whose first argument
+is not a context are reported once, and only when the receiver also has the
+context-aware variant (`QueryContext`, `BeginTx` and so on), as
+`database/sql`'s types do.
+
+Test files, files ending in `_mock.go` or `_mocks.go`, mock packages and
+methods on `Mock…` types are skipped.
+
 ## Why It Matters
 
 Context carries:

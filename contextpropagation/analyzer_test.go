@@ -1,6 +1,7 @@
 package contextpropagation_test
 
 import (
+	"path/filepath"
 	"reflect"
 	"testing"
 
@@ -14,6 +15,13 @@ import (
 func TestContextPropagationAnalyzer(t *testing.T) {
 	testdata := analysistest.TestData()
 	analysistest.Run(t, testdata, contextpropagation.Analyzer, "a", "mockdb")
+}
+
+// TestCheckoutUnderMocksDir runs the analyzer from testdata/mocks, so every
+// file's absolute path contains a mocks/ directory that is not part of the
+// package path.
+func TestCheckoutUnderMocksDir(t *testing.T) {
+	analysistest.Run(t, filepath.Join(analysistest.TestData(), "mocks"), contextpropagation.Analyzer, "undermock")
 }
 
 // statsAnalyzer exposes AnalyzeContextPropagation as an analyzer result so it
