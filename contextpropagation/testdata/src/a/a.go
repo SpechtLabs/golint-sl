@@ -19,6 +19,12 @@ func (DB) Exec(args ...any)     {}
 func (DB) Prepare(args ...any)  {}
 func (DB) Begin(args ...any)    {}
 
+func (DB) QueryContext(ctx context.Context, args ...any)    { _ = ctx }
+func (DB) QueryRowContext(ctx context.Context, args ...any) { _ = ctx }
+func (DB) ExecContext(ctx context.Context, args ...any)     { _ = ctx }
+func (DB) PrepareContext(ctx context.Context, args ...any)  { _ = ctx }
+func (DB) BeginTx(ctx context.Context, args ...any)         { _ = ctx }
+
 type Store struct {
 	db  DB
 	dbs []DB
@@ -169,9 +175,7 @@ func (s *Store) NamedCtx(parent context.Context) {
 
 func withContext(ctx context.Context) context.Context { return ctx }
 
-// Suppressed via nolint: method calls without a context argument. Each of
-// these lines currently gets two diagnostics (see report), so they are only
-// exercised under suppression.
+// Suppressed via nolint: method calls without a context argument
 func (s *Store) Suppressed(ctx context.Context) {
 	helper(ctx)
 	s.db.Query("SELECT 1") //nolint:contextpropagation

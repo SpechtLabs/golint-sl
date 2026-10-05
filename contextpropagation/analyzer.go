@@ -5,6 +5,7 @@ package contextpropagation
 import (
 	"go/ast"
 	"go/types"
+	"path/filepath"
 	"strings"
 
 	"golang.org/x/tools/go/analysis"
@@ -58,15 +59,16 @@ var packageLevelCallsWithoutContext = map[string]string{
 	"grpc.Dial": "use grpc.DialContext instead",
 }
 
-// methodsRequiringContext are method names that have Context variants
-// We only flag these if the first argument is NOT a context
+// methodsRequiringContext maps method names to their context-aware variants.
+// A call is only flagged when its receiver actually has the variant (as
+// database/sql's DB, Tx and Conn do) and its first argument is not a context.
 var methodsRequiringContext = map[string]string{
 	// database/sql methods
-	"Query":    "use QueryContext instead",
-	"QueryRow": "use QueryRowContext instead",
-	"Exec":     "use ExecContext instead",
-	"Prepare":  "use PrepareContext instead",
-	"Begin":    "use BeginTx instead",
+	"Query":    "QueryContext",
+	"QueryRow": "QueryRowContext",
+	"Exec":     "ExecContext",
+	"Prepare":  "PrepareContext",
+	"Begin":    "BeginTx",
 }
 
 // nonContextFunctions are functions that commonly don't need context
@@ -121,18 +123,18 @@ func run(pass *analysis.Pass) (any, error) {
 			return
 		}
 
-		// Get file path for context-aware checks
-		pos := pass.Fset.Position(fn.Pos())
-		filePath := pos.Filename
+		// Only the file's own name is looked at: the directories above it are
+		// wherever the module is checked out, and a mock/ or mocks/ directory
+		// inside the module is a mock package (see isMockPackage)
+		fileName := filepath.Base(pass.Fset.Position(fn.Pos()).Filename)
 
 		// Skip test files entirely
-		if strings.HasSuffix(filePath, "_test.go") {
+		if strings.HasSuffix(fileName, "_test.go") {
 			return
 		}
 
 		// Skip mock files - mocks often intentionally ignore context
-		if strings.Contains(filePath, "/mock/") || strings.Contains(filePath, "/mocks/") ||
-			strings.HasSuffix(filePath, "_mock.go") || strings.HasSuffix(filePath, "_mocks.go") {
+		if strings.HasSuffix(fileName, "_mock.go") || strings.HasSuffix(fileName, "_mocks.go") {
 			return
 		}
 
@@ -157,13 +159,13 @@ func run(pass *analysis.Pass) (any, error) {
 
 		if hasContext {
 			// Check if context is used
-			checkContextUsed(reporter, fn, ctxParam)
+			checkContextUsed(pass, reporter, fn, ctxParam)
 
 			// Check for context.Background/TODO when real context available
 			checkUnnecessaryBackgroundContext(reporter, fn)
 
 			// Check calls that should use context
-			checkCallsWithoutContext(reporter, fn, ctxParam)
+			checkCallsWithoutContext(pass, reporter, fn)
 		}
 
 		// Even without context param, check for problematic patterns
@@ -180,8 +182,7 @@ func getContextParam(fn *ast.FuncDecl) string {
 	}
 
 	for _, param := range fn.Type.Params.List {
-		paramType := types.ExprString(param.Type)
-		if strings.Contains(paramType, "context.Context") || paramType == "Context" {
+		if isContextTypeExpr(param.Type) {
 			if len(param.Names) > 0 {
 				return param.Names[0].Name
 			}
@@ -201,87 +202,162 @@ var contextMethods = map[string]bool{
 	"Value":    true, // ctx.Value() for retrieving values
 }
 
+// contextUsage records how a function body uses its context parameter.
+type contextUsage struct {
+	usedInCall        bool // ctx passed as argument to a function call
+	usedContextMethod bool // ctx methods called (ctx.Done(), ctx.Err(), etc.)
+	storedInField     bool // ctx stored in a struct field (m.ctx = ctx)
+	usedOtherwise     bool // ctx used in any other way (select, assignment, etc.)
+	hasFunctionCalls  bool
+}
+
 // checkContextUsed verifies the context parameter is actually used AND passed to sub-calls
-func checkContextUsed(reporter *nolint.Reporter, fn *ast.FuncDecl, ctxParam string) {
+func checkContextUsed(pass *analysis.Pass, reporter *nolint.Reporter, fn *ast.FuncDecl, ctxParam string) {
 	if fn.Body == nil {
 		return
 	}
 
-	usedInCall := false        // ctx passed as argument to a function call
-	usedContextMethod := false // ctx methods called (ctx.Done(), ctx.Err(), etc.)
-	storedInField := false     // ctx stored in a struct field (m.ctx = ctx)
-	usedOtherwise := false     // ctx used in any other way (select, assignment, etc.)
-	hasFunctionCalls := false
+	usage := scanContextUsage(pass, fn)
+
+	// Context is meaningfully used if:
+	// 1. Passed to a sub-call, OR
+	// 2. A context method is called (Done, Deadline, Err, Value), OR
+	// 3. Stored in a struct field for later use
+	contextMeaningfullyUsed := usage.usedInCall || usage.usedContextMethod || usage.storedInField
+	makesCalls := usage.hasFunctionCalls && !isSimpleFunction(fn)
+
+	switch {
+	case ctxParam == "_" && makesCalls:
+		// A blank context can't be used; say why it matters when calls are made
+		reporter.Reportf(fn.Pos(),
+			"context parameter is explicitly ignored with '_'; HTTP/API calls in this function won't support tracing or cancellation")
+	case ctxParam == "_":
+		reporter.Reportf(fn.Pos(),
+			"context parameter is explicitly ignored with '_'; this breaks tracing and cancellation propagation")
+	case !contextMeaningfullyUsed && !usage.usedOtherwise:
+		reporter.Reportf(fn.Pos(),
+			"context parameter %q is received but never used; pass it to sub-calls or remove it",
+			ctxParam)
+	case !contextMeaningfullyUsed && makesCalls:
+		// Context is referenced but not used meaningfully (not passed to calls, no methods called)
+		// This might indicate missing context propagation
+		reporter.Reportf(fn.Pos(),
+			"context parameter %q is not passed to any sub-function calls; ensure context is propagated for tracing/cancellation",
+			ctxParam)
+	}
+}
+
+// scanContextUsage walks fn's body and records how it uses the context
+// parameter and the local variables it was copied into (c := ctx), matched by
+// object identity. ast.Inspect visits an assignment before the statements
+// after it, so one pass collects the copies.
+func scanContextUsage(pass *analysis.Pass, fn *ast.FuncDecl) contextUsage {
+	var usage contextUsage
+
+	ctxVars := make(map[types.Object]bool)
+	if v := contextParamObject(pass, fn); v != nil {
+		ctxVars[v] = true
+	}
+	isCtx := func(ident *ast.Ident) bool {
+		obj := pass.TypesInfo.ObjectOf(ident)
+		return obj != nil && ctxVars[obj]
+	}
 
 	ast.Inspect(fn.Body, func(n ast.Node) bool {
 		switch node := n.(type) {
 		case *ast.AssignStmt:
 			// Check if context is being stored in a field (e.g., m.ctx = ctx)
-			if storesIdentInField(node, ctxParam) {
-				storedInField = true
+			if storesIdentInField(node, isCtx) {
+				usage.storedInField = true
 			}
+			trackContextCopies(pass, node.Lhs, node.Rhs, isCtx, ctxVars)
+
+		case *ast.ValueSpec:
+			names := make([]ast.Expr, len(node.Names))
+			for i, name := range node.Names {
+				names[i] = name
+			}
+			trackContextCopies(pass, names, node.Values, isCtx, ctxVars)
 
 		case *ast.CallExpr:
-			hasFunctionCalls = true
+			usage.hasFunctionCalls = true
 
 			// Check if this is a method call on the context (ctx.Done(), ctx.Err(), etc.)
-			if isContextMethodCall(node, ctxParam) {
-				usedContextMethod = true
+			if isContextMethodCall(node, isCtx) {
+				usage.usedContextMethod = true
 				return true
 			}
 
 			// Check if ctx is passed as an argument
 			for _, arg := range node.Args {
-				if containsIdent(arg, ctxParam) {
-					usedInCall = true
+				if containsIdent(arg, isCtx) {
+					usage.usedInCall = true
 					return true
 				}
 			}
 
 		case *ast.Ident:
 			// Check for other uses (select case, assignments, etc.)
-			if node.Name == ctxParam {
-				usedOtherwise = true
+			if isCtx(node) {
+				usage.usedOtherwise = true
 			}
 		}
 		return true
 	})
 
-	// Context is meaningfully used if:
-	// 1. Passed to a sub-call, OR
-	// 2. A context method is called (Done, Deadline, Err, Value), OR
-	// 3. Stored in a struct field for later use
-	contextMeaningfullyUsed := usedInCall || usedContextMethod || storedInField
+	return usage
+}
 
-	if !contextMeaningfullyUsed && !usedOtherwise {
-		if ctxParam == "_" {
-			reporter.Reportf(fn.Pos(),
-				"context parameter is explicitly ignored with '_'; this breaks tracing and cancellation propagation")
-		} else {
-			reporter.Reportf(fn.Pos(),
-				"context parameter %q is received but never used; pass it to sub-calls or remove it",
-				ctxParam)
+// contextParamObject returns the variable of fn's named context parameter, or
+// nil when the parameter is unnamed or blank.
+func contextParamObject(pass *analysis.Pass, fn *ast.FuncDecl) *types.Var {
+	for _, param := range fn.Type.Params.List {
+		if !isContextTypeExpr(param.Type) || len(param.Names) == 0 {
+			continue
 		}
-	} else if !contextMeaningfullyUsed && hasFunctionCalls && !isSimpleFunction(fn) {
-		// Context is referenced but not used meaningfully (not passed to calls, no methods called)
-		// This might indicate missing context propagation
-		if ctxParam == "_" {
-			reporter.Reportf(fn.Pos(),
-				"context parameter is explicitly ignored with '_'; HTTP/API calls in this function won't support tracing or cancellation")
-		} else {
-			reporter.Reportf(fn.Pos(),
-				"context parameter %q is not passed to any sub-function calls; ensure context is propagated for tracing/cancellation",
-				ctxParam)
+		if param.Names[0].Name == "_" {
+			return nil
+		}
+		v, _ := pass.TypesInfo.Defs[param.Names[0]].(*types.Var)
+		return v
+	}
+	return nil
+}
+
+// isContextTypeExpr reports whether a parameter's type expression is spelled
+// as a context, the same test getContextParam uses.
+func isContextTypeExpr(expr ast.Expr) bool {
+	paramType := types.ExprString(expr)
+	return strings.Contains(paramType, "context.Context") || paramType == "Context"
+}
+
+// trackContextCopies adds to ctxVars every variable on the left-hand side
+// that is assigned a context variable as it is (c := ctx, var c = ctx).
+func trackContextCopies(pass *analysis.Pass, lhs, rhs []ast.Expr, isCtx func(*ast.Ident) bool, ctxVars map[types.Object]bool) {
+	if len(lhs) != len(rhs) {
+		return
+	}
+	for i, value := range rhs {
+		ident, ok := ast.Unparen(value).(*ast.Ident)
+		if !ok || !isCtx(ident) {
+			continue
+		}
+		target, ok := lhs[i].(*ast.Ident)
+		if !ok {
+			continue
+		}
+		if obj := pass.TypesInfo.ObjectOf(target); obj != nil {
+			ctxVars[obj] = true
 		}
 	}
 }
 
-// storesIdentInField reports whether assign stores the identifier name into a
+// storesIdentInField reports whether assign stores a context variable into a
 // field selector (m.ctx, s.context, etc.).
-func storesIdentInField(assign *ast.AssignStmt, name string) bool {
+func storesIdentInField(assign *ast.AssignStmt, isCtx func(*ast.Ident) bool) bool {
 	for i, rhs := range assign.Rhs {
 		ident, ok := rhs.(*ast.Ident)
-		if !ok || ident.Name != name || i >= len(assign.Lhs) {
+		if !ok || !isCtx(ident) || i >= len(assign.Lhs) {
 			continue
 		}
 		if _, ok := assign.Lhs[i].(*ast.SelectorExpr); ok {
@@ -291,22 +367,22 @@ func storesIdentInField(assign *ast.AssignStmt, name string) bool {
 	return false
 }
 
-// isContextMethodCall reports whether call is a context method call on the
-// context parameter (ctx.Done(), ctx.Err(), etc.).
-func isContextMethodCall(call *ast.CallExpr, ctxParam string) bool {
+// isContextMethodCall reports whether call is a context method call on a
+// context variable (ctx.Done(), ctx.Err(), etc.).
+func isContextMethodCall(call *ast.CallExpr, isCtx func(*ast.Ident) bool) bool {
 	sel, ok := call.Fun.(*ast.SelectorExpr)
 	if !ok {
 		return false
 	}
 	ident, ok := sel.X.(*ast.Ident)
-	return ok && ident.Name == ctxParam && contextMethods[sel.Sel.Name]
+	return ok && isCtx(ident) && contextMethods[sel.Sel.Name]
 }
 
-// containsIdent checks if an expression contains an identifier with the given name
-func containsIdent(expr ast.Expr, name string) bool {
+// containsIdent checks if an expression contains an identifier matching isCtx
+func containsIdent(expr ast.Expr, isCtx func(*ast.Ident) bool) bool {
 	found := false
 	ast.Inspect(expr, func(n ast.Node) bool {
-		if ident, ok := n.(*ast.Ident); ok && ident.Name == name {
+		if ident, ok := n.(*ast.Ident); ok && isCtx(ident) {
 			found = true
 			return false
 		}
@@ -375,7 +451,7 @@ func checkUnnecessaryBackgroundContext(reporter *nolint.Reporter, fn *ast.FuncDe
 }
 
 // checkCallsWithoutContext checks for calls that should pass context but don't
-func checkCallsWithoutContext(reporter *nolint.Reporter, fn *ast.FuncDecl, ctxParam string) {
+func checkCallsWithoutContext(pass *analysis.Pass, reporter *nolint.Reporter, fn *ast.FuncDecl) {
 	ast.Inspect(fn.Body, func(n ast.Node) bool {
 		call, ok := n.(*ast.CallExpr)
 		if !ok {
@@ -389,11 +465,9 @@ func checkCallsWithoutContext(reporter *nolint.Reporter, fn *ast.FuncDecl, ctxPa
 		}
 
 		// Check package-level function calls (http.Get, exec.Command, etc.)
-		for pattern, advice := range packageLevelCallsWithoutContext {
-			if callName == pattern {
-				reporter.Reportf(call.Pos(),
-					"%s called without context; %s", callName, advice)
-			}
+		if advice, isPkgCall := packageLevelCallsWithoutContext[callName]; isPkgCall {
+			reporter.Reportf(call.Pos(),
+				"%s called without context; %s", callName, advice)
 		}
 
 		// Check method calls that should use Context variants
@@ -404,62 +478,49 @@ func checkCallsWithoutContext(reporter *nolint.Reporter, fn *ast.FuncDecl, ctxPa
 		}
 
 		methodName := sel.Sel.Name
-		// Check if first argument is context
-		if advice, needsContext := methodsRequiringContext[methodName]; needsContext && !firstArgIsContext(call, ctxParam) {
+		variant, ok := methodsRequiringContext[methodName]
+		if ok && hasContextVariant(pass, sel, variant) && !firstArgIsContext(pass, call) {
 			reporter.Reportf(call.Pos(),
-				"%s() called without context as first argument; %s", methodName, advice)
+				"%s() called without context as first argument; use %s instead", methodName, variant)
 		}
 
 		return true
 	})
 }
 
-// firstArgIsContext checks if the first argument to a call is a context
-func firstArgIsContext(call *ast.CallExpr, ctxParam string) bool {
+// hasContextVariant reports whether sel is a method call whose receiver also
+// has the method variant, such as QueryContext next to Query.
+func hasContextVariant(pass *analysis.Pass, sel *ast.SelectorExpr, variant string) bool {
+	selection, ok := pass.TypesInfo.Selections[sel]
+	if !ok || selection.Kind() != types.MethodVal {
+		return false
+	}
+	obj, _, _ := types.LookupFieldOrMethod(selection.Recv(), true, pass.Pkg, variant)
+	_, ok = obj.(*types.Func)
+	return ok
+}
+
+// firstArgIsContext checks if the first argument to a call is a context: a
+// value whose type has context.Context's methods, whatever it is called.
+func firstArgIsContext(pass *analysis.Pass, call *ast.CallExpr) bool {
 	if len(call.Args) == 0 {
 		return false
 	}
-
-	firstArg := call.Args[0]
-
-	// Check if it's the context parameter directly
-	if ident, ok := firstArg.(*ast.Ident); ok && (ident.Name == ctxParam || ident.Name == "ctx") {
-		return true
-	}
-
-	// Check for context.Background(), context.TODO(), or context.WithX()
-	if isContextPackageCall(firstArg) {
-		return true
-	}
-
-	// Check for derived contexts like ctx.WithValue, etc.
-	argStr := types.ExprString(firstArg)
-	if strings.Contains(argStr, "ctx") || strings.Contains(argStr, "Context") {
-		return true
-	}
-
-	return false
-}
-
-// isContextPackageCall reports whether expr is a call into the context
-// package (context.Background(), context.WithX(), etc.).
-func isContextPackageCall(expr ast.Expr) bool {
-	call, ok := expr.(*ast.CallExpr)
-	if !ok {
+	t := pass.TypesInfo.TypeOf(call.Args[0])
+	if t == nil {
 		return false
 	}
-	sel, ok := call.Fun.(*ast.SelectorExpr)
-	if !ok {
-		return false
+	for name := range contextMethods {
+		obj, _, _ := types.LookupFieldOrMethod(t, true, pass.Pkg, name)
+		if _, ok := obj.(*types.Func); !ok {
+			return false
+		}
 	}
-	ident, ok := sel.X.(*ast.Ident)
-	return ok && ident.Name == "context"
+	return true
 }
 
 // checkContextAwareCalls checks for calls that have context-aware variants
 func checkContextAwareCalls(reporter *nolint.Reporter, fn *ast.FuncDecl, hasContext bool) {
-	ctxParam := getContextParam(fn)
-
 	ast.Inspect(fn.Body, func(n ast.Node) bool {
 		call, ok := n.(*ast.CallExpr)
 		if !ok {
@@ -479,29 +540,11 @@ func checkContextAwareCalls(reporter *nolint.Reporter, fn *ast.FuncDecl, hasCont
 					"always use http.NewRequestWithContext(ctx, method, url, body) for proper context propagation")
 		}
 
-		// Only check the rest if context is available
-		if !hasContext {
-			return true
-		}
-
-		// Check for time.Sleep when context is available
-		if callName == "time.Sleep" {
+		// Check for time.Sleep when context is available. Methods with a
+		// Context variant are checkCallsWithoutContext's job.
+		if hasContext && callName == "time.Sleep" {
 			reporter.Reportf(call.Pos(),
 				"time.Sleep called when context is available; use select with <-ctx.Done() and time.After() instead")
-		}
-
-		// Check method calls that should propagate context
-		sel, ok := call.Fun.(*ast.SelectorExpr)
-		if !ok {
-			return true
-		}
-
-		methodName := sel.Sel.Name
-
-		// Check if this is a method that has a Context variant and context isn't being passed
-		if advice, needsContext := methodsRequiringContext[methodName]; needsContext && !firstArgIsContext(call, ctxParam) {
-			reporter.Reportf(call.Pos(),
-				"%s() called without context; %s", methodName, advice)
 		}
 
 		return true
