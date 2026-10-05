@@ -68,7 +68,12 @@ func run(pass *analysis.Pass) (any, error) {
 	insp.Preorder(nodeFilter, func(n ast.Node) {
 		switch node := n.(type) {
 		case *ast.TypeSpec:
-			checkStutter(reporter, pkgName, node.Name.Name, node, "type")
+			// Callers only ever spell exported package-level types with the
+			// package qualifier, so unexported and function-local types can't
+			// stutter.
+			if isPackageLevelExported(pass, node.Name) {
+				checkStutter(reporter, pkgName, node.Name.Name, node, "type")
+			}
 
 		case *ast.FuncDecl:
 			// Only check exported functions without receivers
@@ -158,4 +163,14 @@ func checkStutter(reporter *nolint.Reporter, pkgName, exportedName string, node 
 				kind, pkgName, exportedName, pkgName, suffix)
 		}
 	}
+}
+
+// isPackageLevelExported reports whether name declares an exported object in
+// the package scope, the only kind callers refer to as pkg.Name.
+func isPackageLevelExported(pass *analysis.Pass, name *ast.Ident) bool {
+	if !name.IsExported() {
+		return false
+	}
+	obj := pass.TypesInfo.Defs[name]
+	return obj != nil && obj.Parent() == pass.Pkg.Scope()
 }
