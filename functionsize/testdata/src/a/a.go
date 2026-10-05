@@ -2306,3 +2306,249 @@ func Suppressed() { //nolint:functionsize
 	x++
 	_ = x
 }
+
+// Bad: four levels of nesting add the early-return advice
+func DeepNest() { // want `function DeepNest is 80 lines \(recommended max 80\); reduce nesting with early returns`
+	x := 0
+	for x < 10 {
+		if x > 0 {
+			for x > 5 {
+				if x > 7 {
+					x--
+				}
+			}
+		}
+		x++
+	}
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	_ = x
+}
+
+// Good: an else-if chain stays at one level of nesting
+func ElseIfChain() { // want `function ElseIfChain is 80 lines \(recommended max 80\); split into smaller, focused functions with descriptive names`
+	x := 0
+	if x == 1 {
+		x--
+	} else if x == 2 {
+		x--
+	} else if x == 3 {
+		x--
+	} else if x == 4 {
+		x--
+	} else {
+		x--
+	}
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	_ = x
+}
+
+// Good: nesting inside a function literal is not counted
+func ClosureNest() { // want `function ClosureNest is 80 lines \(recommended max 80\); split into smaller, focused functions with descriptive names`
+	x := 0
+	if x > 0 {
+		f := func() {
+			for x < 10 {
+				if x > 0 {
+					for x > 5 {
+						x--
+					}
+				}
+			}
+		}
+		f()
+	}
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	x++
+	_ = x
+}
