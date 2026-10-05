@@ -2,6 +2,7 @@ package golintsl_test
 
 import (
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/golangci/plugin-module-register/register"
@@ -60,11 +61,6 @@ func TestNew(t *testing.T) {
 			want: allNamesExcept("wideevents", "nilcheck"),
 		},
 		{
-			name: "unknown disabled names are ignored",
-			conf: map[string]any{"disabled-analyzers": []string{"doesnotexist"}},
-			want: allNamesExcept(),
-		},
-		{
 			name: "typed settings are accepted",
 			conf: golintsl.Settings{DisabledAnalyzers: []string{"todotracker"}},
 			want: allNamesExcept("todotracker"),
@@ -84,6 +80,44 @@ func TestNew(t *testing.T) {
 				t.Errorf("GetLoadMode() = %q, want %q", got, register.LoadModeTypesInfo)
 			}
 		})
+	}
+}
+
+func TestNewRejectsBadSettings(t *testing.T) {
+	tests := []struct {
+		name    string
+		conf    any
+		wantErr string
+	}{
+		{
+			name:    "a misspelled key",
+			conf:    map[string]any{"disabled_analyzers": []string{"wideevents"}},
+			wantErr: `unknown field "disabled_analyzers"`,
+		},
+		{
+			name:    "a list given as a string",
+			conf:    map[string]any{"disabled-analyzers": "wideevents"},
+			wantErr: "golint-sl settings",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := golintsl.New(tt.conf)
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("New() error = %v, want it to contain %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestBuildAnalyzersRejectsUnknownNames(t *testing.T) {
+	p, err := golintsl.New(map[string]any{"disabled-analyzers": []string{"nilcheck", "doesnotexist"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.BuildAnalyzers(); err == nil || !strings.Contains(err.Error(), `"doesnotexist"`) {
+		t.Fatalf("BuildAnalyzers() error = %v, want the unknown name reported", err)
 	}
 }
 

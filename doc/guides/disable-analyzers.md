@@ -30,6 +30,8 @@ linters:
             - sideeffects
 ```
 
+golint-sl refuses settings it doesn't understand: an unknown key (such as `disabled_analyzers`) or a name in `disabled-analyzers` that isn't an analyzer stops the lint run with an error naming it, instead of leaving the analyzer you meant to disable running.
+
 ## Per-Line with Directives
 
 Use `//nolint` comment directives to suppress warnings on specific lines:
