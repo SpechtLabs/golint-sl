@@ -6,11 +6,14 @@ import (
 	"go/ast"
 	"go/token"
 	"go/types"
+	"go/version"
+	"slices"
 	"strings"
 
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/analysis/passes/inspect"
 	"golang.org/x/tools/go/ast/inspector"
+	"golang.org/x/tools/go/types/typeutil"
 
 	"github.com/spechtlabs/golint-sl/internal/nolint"
 )
@@ -19,10 +22,19 @@ import (
 const Doc = `detect potential data races and synchronization issues
 
 This analyzer detects:
-1. Variables captured by goroutines without synchronization
-2. Struct fields accessed in goroutines without mutex protection
-3. Maps accessed concurrently without sync.Map or mutex
-4. Channels that may deadlock (unbuffered with no receiver)
+1. Variables captured by goroutines without synchronization: a map,
+   slice, array or pointer the enclosing function declared, used by a
+   goroutine that doesn't synchronize; a local variable or parameter a
+   goroutine that doesn't synchronize assigns (or, for a map, writes an
+   element of) while the enclosing function still uses it after the go
+   statement; and a map the goroutines of a loop write without a lock.
+   A goroutine synchronizes when it takes a lock, uses a channel, calls
+   into sync or sync/atomic, or calls a function value or an interface
+2. Loop variables shared by every iteration and captured by a goroutine;
+   from Go 1.22 on, a variable the for clause declares is per iteration
+   and is not reported
+3. Methods of a struct with a mutex field that access the struct's
+   fields without calling Lock or RLock
 
 Data races cause unpredictable behavior and are hard to debug.
 Use proper synchronization:
@@ -48,7 +60,12 @@ Use proper synchronization:
     var count int
     go func() {
         count++  // Data race!
-    }()`
+    }()
+    fmt.Println(count)`
+
+// perIterationLoopVars is the first language version in which a variable
+// declared by a for clause is a new variable in every iteration.
+const perIterationLoopVars = "go1.22"
 
 // Analyzer reports potential data races and synchronization issues.
 var Analyzer = &analysis.Analyzer{
@@ -58,6 +75,15 @@ var Analyzer = &analysis.Analyzer{
 	Run:      run,
 }
 
+// capture is a local variable of the enclosing function that a goroutine's
+// function literal uses.
+type capture struct {
+	obj      *types.Var
+	pos      token.Pos // the first use inside the function literal
+	written  bool      // the goroutine assigns the variable itself
+	mapWrite bool      // the goroutine writes or deletes an element of the map
+}
+
 func run(pass *analysis.Pass) (any, error) {
 	reporter := nolint.NewReporter(pass)
 	insp := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
@@ -65,22 +91,18 @@ func run(pass *analysis.Pass) (any, error) {
 	// Track struct types with mutex fields
 	structsWithMutex := findStructsWithMutex(pass)
 
-	nodeFilter := []ast.Node{
-		(*ast.GoStmt)(nil),
-		(*ast.FuncDecl)(nil),
-	}
+	// Local variables the program declares as maps, slices or pointers
+	references := collectReferenceVars(pass, insp)
 
-	var currentFunc *ast.FuncDecl
+	insp.Preorder([]ast.Node{(*ast.FuncDecl)(nil)}, func(n ast.Node) {
+		checkMutexUsage(reporter, n.(*ast.FuncDecl), structsWithMutex)
+	})
 
-	insp.Preorder(nodeFilter, func(n ast.Node) {
-		switch node := n.(type) {
-		case *ast.FuncDecl:
-			currentFunc = node
-			checkMutexUsage(reporter, node, structsWithMutex)
-
-		case *ast.GoStmt:
-			checkGoroutineCaptures(reporter, node, currentFunc)
+	insp.WithStack([]ast.Node{(*ast.GoStmt)(nil)}, func(n ast.Node, push bool, stack []ast.Node) bool {
+		if push {
+			checkGoroutineCaptures(pass, reporter, n.(*ast.GoStmt), stack, references)
 		}
+		return true
 	})
 
 	return nil, nil
@@ -117,216 +139,411 @@ func findStructsWithMutex(pass *analysis.Pass) map[string]bool {
 	return result
 }
 
-// checkGoroutineCaptures checks for variables captured by goroutines
-func checkGoroutineCaptures(reporter *nolint.Reporter, goStmt *ast.GoStmt, currentFunc *ast.FuncDecl) {
+// collectReferenceVars returns the variables whose declaration makes them a
+// map, slice, array or pointer: a var declaration with an explicit type, or a
+// short variable declaration that initializes them with make, a composite
+// literal or an address. Later assignments don't change the result.
+func collectReferenceVars(pass *analysis.Pass, insp *inspector.Inspector) map[types.Object]bool {
+	refs := make(map[types.Object]bool)
+
+	nodeFilter := []ast.Node{
+		(*ast.AssignStmt)(nil),
+		(*ast.ValueSpec)(nil),
+	}
+
+	insp.Preorder(nodeFilter, func(n ast.Node) {
+		switch node := n.(type) {
+		case *ast.AssignStmt:
+			if node.Tok != token.DEFINE || len(node.Lhs) != len(node.Rhs) {
+				return
+			}
+			for i, lhs := range node.Lhs {
+				// The left-hand side of := holds identifiers only. A
+				// redeclared variable has no definition here and keeps the
+				// kind of its first declaration.
+				if obj := pass.TypesInfo.Defs[lhs.(*ast.Ident)]; obj != nil && isReferenceExpr(pass, node.Rhs[i]) {
+					refs[obj] = true
+				}
+			}
+
+		case *ast.ValueSpec:
+			// Only an explicit type counts here: a var declaration with an
+			// initializer and no type is left alone.
+			if node.Type == nil || !isReferenceTypeExpr(node.Type) {
+				return
+			}
+			for _, name := range node.Names {
+				// The blank identifier has no object, so it's never captured.
+				refs[pass.TypesInfo.Defs[name]] = true
+			}
+		}
+	})
+
+	return refs
+}
+
+// isReferenceTypeExpr reports whether a declared type is a pointer, map,
+// slice or array type.
+func isReferenceTypeExpr(expr ast.Expr) bool {
+	switch expr.(type) {
+	case *ast.StarExpr, *ast.MapType, *ast.ArrayType:
+		return true
+	default:
+		return false
+	}
+}
+
+// isReferenceExpr reports whether an initializer creates a pointer, map,
+// slice or array: an address, a make of a map or slice, or a map, slice or
+// array literal.
+func isReferenceExpr(pass *analysis.Pass, expr ast.Expr) bool {
+	switch e := expr.(type) {
+	case *ast.UnaryExpr:
+		return e.Op == token.AND
+	case *ast.CallExpr:
+		ident, ok := e.Fun.(*ast.Ident)
+		if !ok || len(e.Args) == 0 {
+			return false
+		}
+		if builtin, ok := pass.TypesInfo.Uses[ident].(*types.Builtin); !ok || builtin.Name() != "make" {
+			return false
+		}
+		switch e.Args[0].(type) {
+		case *ast.MapType, *ast.ArrayType:
+			return true
+		}
+	case *ast.CompositeLit:
+		switch e.Type.(type) {
+		case *ast.MapType, *ast.ArrayType:
+			return true
+		}
+	}
+
+	return false
+}
+
+// checkGoroutineCaptures checks the local variables a goroutine's function
+// literal captures. stack holds the go statement's ancestors, from the file
+// down to the go statement itself.
+func checkGoroutineCaptures(pass *analysis.Pass, reporter *nolint.Reporter, goStmt *ast.GoStmt, stack []ast.Node, references map[types.Object]bool) {
 	funcLit, ok := goStmt.Call.Fun.(*ast.FuncLit)
 	if !ok {
 		return
 	}
 
-	// Find variables defined in the parent scope
-	parentVars := collectLocalVars(currentFunc)
+	captures := findCapturedVars(pass, funcLit)
+	if len(captures) == 0 {
+		return
+	}
 
-	// Find variables used in the goroutine
-	capturedVars := findCapturedVars(funcLit, parentVars)
+	file := stack[0].(*ast.File)
+	decl := stack[1]
+	loops := enclosingLoops(stack, goStmt)
+	locks, syncs := goroutineSynchronization(pass, funcLit)
 
-	// Check for problematic captures
-	for varName, varInfo := range capturedVars {
+	for _, c := range captures {
 		// Skip channels - they are inherently thread-safe in Go
-		if varInfo.isChannel {
+		if _, ok := types.Unalias(c.obj.Type()).Underlying().(*types.Chan); ok {
 			continue
 		}
 
-		// Check if it's a loop variable (common bug)
-		if isLoopVariable(currentFunc, varName, goStmt) {
-			reporter.Reportf(varInfo.pos,
+		// A variable every iteration of an enclosing loop shares
+		if isSharedLoopVar(pass, file, loops, c.obj) {
+			reporter.Reportf(c.pos,
 				"loop variable %q captured by goroutine; this may cause unexpected behavior - pass as parameter instead",
-				varName)
+				c.obj.Name())
 			continue
 		}
 
-		// Check for pointer/reference types that might be shared
-		if (varInfo.isPointer || varInfo.isMap || varInfo.isSlice) && !varInfo.isProtected {
-			reporter.Reportf(varInfo.pos,
+		// The goroutine takes a lock around its accesses
+		if locks {
+			continue
+		}
+
+		// The goroutines a loop starts all write the same map, whatever else
+		// they synchronize with. Otherwise, a goroutine that synchronizes
+		// with the function some way may well be waited for. One that
+		// doesn't shares a variable the function declared as a reference as
+		// soon as it uses it, and races on any other variable it writes when
+		// the function uses it afterwards or the go statement runs again in
+		// a loop the variable outlives.
+		outlives := outlivesLoop(loops, c.obj)
+		racy := c.mapWrite && outlives ||
+			!syncs && (references[c.obj] ||
+				(c.written || c.mapWrite) && (outlives || usedAfter(pass, decl, goStmt, c.obj)))
+		if racy {
+			reporter.Reportf(c.pos,
 				"shared variable %q captured by goroutine without synchronization; consider using mutex or channels",
-				varName)
+				c.obj.Name())
 		}
 	}
 }
 
-type varInfo struct {
-	pos         token.Pos
-	isPointer   bool
-	isMap       bool
-	isSlice     bool
-	isChannel   bool // Channels are thread-safe, should not be flagged
-	isProtected bool
-}
+// findCapturedVars returns the local variables of the enclosing function
+// that funcLit uses, in the order of their first use, and how the function
+// literal writes them.
+func findCapturedVars(pass *analysis.Pass, funcLit *ast.FuncLit) []*capture {
+	byObj := make(map[*types.Var]*capture)
+	var captures []*capture
 
-// collectLocalVars collects variables defined in a function
-func collectLocalVars(fn *ast.FuncDecl) map[string]varInfo {
-	vars := make(map[string]varInfo)
-
-	if fn == nil || fn.Body == nil {
-		return vars
+	captured := func(expr ast.Expr) *capture {
+		ident, ok := ast.Unparen(expr).(*ast.Ident)
+		if !ok {
+			return nil
+		}
+		obj, ok := pass.TypesInfo.Uses[ident].(*types.Var)
+		if !ok {
+			return nil
+		}
+		return byObj[obj]
 	}
 
-	ast.Inspect(fn.Body, func(n ast.Node) bool {
-		switch node := n.(type) {
-		case *ast.AssignStmt:
-			for _, lhs := range node.Lhs {
-				if ident, ok := lhs.(*ast.Ident); ok {
-					info := varInfo{pos: ident.Pos()}
-					// Try to determine type
-					if len(node.Rhs) > 0 {
-						info = inferVarType(node.Rhs[0], info)
-					}
-					vars[ident.Name] = info
-				}
-			}
-
-		case *ast.ValueSpec:
-			for _, name := range node.Names {
-				info := varInfo{pos: name.Pos()}
-				// Check type
-				if node.Type != nil {
-					switch node.Type.(type) {
-					case *ast.StarExpr:
-						info.isPointer = true
-					case *ast.MapType:
-						info.isMap = true
-					case *ast.ArrayType:
-						info.isSlice = true
-					case *ast.ChanType:
-						info.isChannel = true
-					}
-				}
-				vars[name.Name] = info
-			}
+	markWrite := func(lhs ast.Expr) {
+		if c := captured(lhs); c != nil {
+			c.written = true
+			return
 		}
-
-		return true
-	})
-
-	return vars
-}
-
-func inferVarType(expr ast.Expr, info varInfo) varInfo {
-	switch e := expr.(type) {
-	case *ast.UnaryExpr:
-		if e.Op.String() == "&" {
-			info.isPointer = true
-		}
-	case *ast.CallExpr:
-		if ident, ok := e.Fun.(*ast.Ident); ok && ident.Name == "make" && len(e.Args) > 0 {
-			switch e.Args[0].(type) {
-			case *ast.MapType:
-				info.isMap = true
-			case *ast.ArrayType:
-				info.isSlice = true
-			case *ast.ChanType:
-				info.isChannel = true // Channels are thread-safe
-			}
-		}
-	case *ast.CompositeLit:
-		switch e.Type.(type) {
-		case *ast.MapType:
-			info.isMap = true
-		case *ast.ArrayType:
-			info.isSlice = true
-		}
-	}
-	return info
-}
-
-// findCapturedVars finds variables from parent scope used in a function literal
-func findCapturedVars(funcLit *ast.FuncLit, parentVars map[string]varInfo) map[string]varInfo {
-	captured := make(map[string]varInfo)
-
-	// Get parameters of the function literal (these are not captured)
-	params := make(map[string]bool)
-	if funcLit.Type.Params != nil {
-		for _, field := range funcLit.Type.Params.List {
-			for _, name := range field.Names {
-				params[name.Name] = true
+		if index, ok := ast.Unparen(lhs).(*ast.IndexExpr); ok {
+			if c := captured(index.X); c != nil && isMap(c.obj) {
+				c.mapWrite = true
 			}
 		}
 	}
 
+	// First pass: the captured variables, in the order of their first use
 	ast.Inspect(funcLit.Body, func(n ast.Node) bool {
 		ident, ok := n.(*ast.Ident)
 		if !ok {
 			return true
 		}
-
-		// Skip if it's a parameter
-		if params[ident.Name] {
+		obj, ok := pass.TypesInfo.Uses[ident].(*types.Var)
+		if !ok || byObj[obj] != nil || !isCapturedLocal(pass, funcLit, obj) {
 			return true
 		}
-
-		// Check if it's from parent scope
-		if info, exists := parentVars[ident.Name]; exists {
-			info.pos = ident.Pos()
-			captured[ident.Name] = info
-		}
-
+		c := &capture{obj: obj, pos: ident.Pos()}
+		byObj[obj] = c
+		captures = append(captures, c)
 		return true
 	})
 
-	return captured
-}
-
-// isLoopVariable checks if a variable is a loop iteration variable
-func isLoopVariable(fn *ast.FuncDecl, varName string, goStmt *ast.GoStmt) bool {
-	if fn == nil || fn.Body == nil {
-		return false
-	}
-
-	isLoopVar := false
-
-	ast.Inspect(fn.Body, func(n ast.Node) bool {
+	// Second pass: how the function literal writes them
+	ast.Inspect(funcLit.Body, func(n ast.Node) bool {
 		switch node := n.(type) {
+		case *ast.AssignStmt:
+			for _, lhs := range node.Lhs {
+				markWrite(lhs)
+			}
+		case *ast.IncDecStmt:
+			markWrite(node.X)
 		case *ast.RangeStmt:
-			// Check if varName is the loop variable
-			// and goStmt is inside this loop
-			if key, ok := node.Key.(*ast.Ident); ok && key.Name == varName && containsNode(node.Body, goStmt) {
-				isLoopVar = true
-				return false
-			}
-			if value, ok := node.Value.(*ast.Ident); ok && value.Name == varName && containsNode(node.Body, goStmt) {
-				isLoopVar = true
-				return false
-			}
-
-		case *ast.ForStmt:
-			// Check init statement for the variable
-			if assign, ok := node.Init.(*ast.AssignStmt); ok {
-				for _, lhs := range assign.Lhs {
-					if ident, ok := lhs.(*ast.Ident); ok && ident.Name == varName && containsNode(node.Body, goStmt) {
-						isLoopVar = true
-						return false
+			if node.Tok == token.ASSIGN {
+				for _, e := range []ast.Expr{node.Key, node.Value} {
+					if e != nil {
+						markWrite(e)
 					}
 				}
 			}
+		case *ast.CallExpr:
+			if isBuiltinCall(pass, node, "delete") && len(node.Args) > 0 {
+				if c := captured(node.Args[0]); c != nil {
+					c.mapWrite = true
+				}
+			}
 		}
-
 		return true
 	})
 
-	return isLoopVar
+	return captures
 }
 
-// containsNode checks if a node contains another node
-func containsNode(parent ast.Node, target ast.Node) bool {
-	found := false
-	ast.Inspect(parent, func(n ast.Node) bool {
-		if n == target {
-			found = true
-			return false
+// isCapturedLocal reports whether obj is a local variable or parameter of a
+// function enclosing funcLit, declared outside funcLit.
+func isCapturedLocal(pass *analysis.Pass, funcLit *ast.FuncLit, obj *types.Var) bool {
+	if obj.IsField() || obj.Pkg() != pass.Pkg {
+		return false
+	}
+	if obj.Parent() == nil || obj.Parent() == pass.Pkg.Scope() {
+		return false
+	}
+	return obj.Pos() < funcLit.Pos() || obj.Pos() >= funcLit.End()
+}
+
+// isMap reports whether v is a map.
+func isMap(v *types.Var) bool {
+	_, ok := types.Unalias(v.Type()).Underlying().(*types.Map)
+	return ok
+}
+
+// isBuiltinCall reports whether call calls the named builtin function.
+func isBuiltinCall(pass *analysis.Pass, call *ast.CallExpr, name string) bool {
+	ident, ok := ast.Unparen(call.Fun).(*ast.Ident)
+	if !ok {
+		return false
+	}
+	builtin, ok := pass.TypesInfo.Uses[ident].(*types.Builtin)
+	return ok && builtin.Name() == name
+}
+
+// goroutineSynchronization reports whether funcLit takes a lock (calls Lock
+// or RLock of a sync type or of a sync.Locker), and whether it may
+// synchronize with the goroutine that started it in any other way: a channel
+// operation, any other call into sync or sync/atomic, or a call through a
+// function value or an interface, which could do either.
+func goroutineSynchronization(pass *analysis.Pass, funcLit *ast.FuncLit) (locks, syncs bool) {
+	ast.Inspect(funcLit.Body, func(n ast.Node) bool {
+		switch node := n.(type) {
+		case *ast.SendStmt, *ast.SelectStmt:
+			syncs = true
+		case *ast.UnaryExpr:
+			if node.Op == token.ARROW {
+				syncs = true
+			}
+		case *ast.RangeStmt:
+			if _, ok := types.Unalias(pass.TypesInfo.TypeOf(node.X)).Underlying().(*types.Chan); ok {
+				syncs = true
+			}
+		case *ast.CallExpr:
+			lock, sync := callSynchronization(pass, node)
+			locks = locks || lock
+			syncs = syncs || sync
 		}
 		return true
 	})
+
+	return locks, syncs
+}
+
+// callSynchronization classifies a call for goroutineSynchronization.
+func callSynchronization(pass *analysis.Pass, call *ast.CallExpr) (lock, sync bool) {
+	if tv, ok := pass.TypesInfo.Types[call.Fun]; ok && tv.IsType() {
+		return false, false // a conversion
+	}
+	if _, ok := ast.Unparen(call.Fun).(*ast.FuncLit); ok {
+		return false, false // goroutineSynchronization inspects its body
+	}
+	if isBuiltinCall(pass, call, "close") {
+		return false, true
+	}
+	if _, ok := typeutil.Callee(pass.TypesInfo, call).(*types.Builtin); ok {
+		return false, false
+	}
+
+	fn := typeutil.StaticCallee(pass.TypesInfo, call)
+	if fn == nil {
+		// A function value or an interface method. Lock and RLock of a
+		// sync.Locker or a sync.RWMutex's RLocker count as locking.
+		if method, ok := typeutil.Callee(pass.TypesInfo, call).(*types.Func); ok && isLockMethod(method) {
+			return true, true
+		}
+		return false, true
+	}
+
+	// Only universe objects have no package, and none is a static callee.
+	switch fn.Pkg().Path() {
+	case "sync":
+		return isLockMethod(fn), true
+	case "sync/atomic":
+		return false, true
+	}
+
+	return false, false
+}
+
+// isLockMethod reports whether fn is a method named Lock or RLock.
+func isLockMethod(fn *types.Func) bool {
+	sig, ok := fn.Type().(*types.Signature)
+	return ok && sig.Recv() != nil && (fn.Name() == "Lock" || fn.Name() == "RLock")
+}
+
+// enclosingLoops returns the for and range statements whose body contains
+// goStmt, innermost last.
+func enclosingLoops(stack []ast.Node, goStmt *ast.GoStmt) []ast.Node {
+	var loops []ast.Node
+	for _, n := range stack {
+		var body *ast.BlockStmt
+		switch loop := n.(type) {
+		case *ast.ForStmt:
+			body = loop.Body
+		case *ast.RangeStmt:
+			body = loop.Body
+		default:
+			continue
+		}
+		if body.Pos() <= goStmt.Pos() && goStmt.End() <= body.End() {
+			loops = append(loops, n)
+		}
+	}
+	return loops
+}
+
+// isSharedLoopVar reports whether obj is the iteration variable of one of
+// loops and all iterations share it: the loop assigns a variable declared
+// outside it, or the file's Go version predates per-iteration loop
+// variables.
+func isSharedLoopVar(pass *analysis.Pass, file *ast.File, loops []ast.Node, obj *types.Var) bool {
+	for _, n := range loops {
+		var tok token.Token
+		var vars []ast.Expr
+		switch loop := n.(type) {
+		case *ast.RangeStmt:
+			tok, vars = loop.Tok, []ast.Expr{loop.Key, loop.Value}
+		case *ast.ForStmt:
+			assign, ok := loop.Init.(*ast.AssignStmt)
+			if !ok {
+				continue
+			}
+			tok, vars = assign.Tok, assign.Lhs
+		}
+
+		for _, e := range vars {
+			ident, ok := e.(*ast.Ident)
+			if !ok {
+				continue
+			}
+			switch {
+			case tok == token.DEFINE && pass.TypesInfo.Defs[ident] == obj:
+				return !perIteration(pass, file)
+			case tok == token.ASSIGN && pass.TypesInfo.Uses[ident] == obj:
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+// perIteration reports whether a for clause in file declares a new
+// variable in every iteration. An unknown version is the toolchain's own.
+func perIteration(pass *analysis.Pass, file *ast.File) bool {
+	v := pass.TypesInfo.FileVersions[file]
+	if v == "" {
+		v = pass.Pkg.GoVersion()
+	}
+	return !version.IsValid(v) || version.Compare(v, perIterationLoopVars) >= 0
+}
+
+// usedAfter reports whether decl uses obj after the go statement, where the
+// use can run concurrently with the goroutine. Uses earlier in an enclosing
+// loop are covered by outlivesLoop.
+func usedAfter(pass *analysis.Pass, decl ast.Node, goStmt *ast.GoStmt, obj *types.Var) bool {
+	found := false
+
+	ast.Inspect(decl, func(n ast.Node) bool {
+		if ident, ok := n.(*ast.Ident); ok && ident.Pos() >= goStmt.End() && pass.TypesInfo.Uses[ident] == obj {
+			found = true
+		}
+		return !found
+	})
+
 	return found
+}
+
+// outlivesLoop reports whether obj was declared before one of loops, so
+// that the goroutines the loop's iterations start all share it.
+func outlivesLoop(loops []ast.Node, obj *types.Var) bool {
+	return slices.ContainsFunc(loops, func(loop ast.Node) bool {
+		return obj.Pos() < loop.Pos()
+	})
 }
 
 // checkMutexUsage checks that struct methods use mutex properly
