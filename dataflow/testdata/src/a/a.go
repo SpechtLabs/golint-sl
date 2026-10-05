@@ -125,3 +125,23 @@ func Propagates(ctx context.Context, d Doer, f func()) {
 func NoContext() {
 	needsCtx(context.Background(), 1)
 }
+
+// Bad: an API key, named in camelCase.
+func PrintAPIKey(apiKey string) {
+	fmt.Println(apiKey) // want `sensitive parameter "apiKey" may be logged`
+}
+
+// Good: a bare key is a map or config key, not a credential.
+func PrintConfigKey(key string) {
+	fmt.Printf("%s\n", key)
+}
+
+// Good: names that only contain a credential word don't name a credential.
+func PrintAuthor(author, tokenizer, monkey string) {
+	fmt.Println(author, tokenizer, monkey)
+}
+
+// Good: neither does a name where the credential word qualifies another.
+func PrintSecretName(secretName string) {
+	log.Printf("using secret %s", secretName)
+}

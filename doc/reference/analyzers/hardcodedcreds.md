@@ -14,7 +14,7 @@ Architecture
 
 This analyzer checks the string literals in variable and constant declarations, assignments and composite literal key-value pairs, outside test files, for:
 
-- Values assigned to names whose last word names a secret: `dbPassword`, `authToken`, `api_key`, `clientSecret`, `PRIVATE_KEY`, `tokenStr`. The name is split into words at underscores, hyphens and camelCase boundaries, so `author`, `tokenizerMode`, `tokenURL` and `passwordPolicy` don't count.
+- Values assigned to names whose last word names a secret: `dbPassword`, `authToken`, `api_key`, `clientSecret`, `awsCreds`, `PRIVATE_KEY`, `tokenStr`. The name is split into words at underscores, hyphens and camelCase boundaries, so `author`, `tokenizerMode`, `tokenURL` and `passwordPolicy` don't count.
 - Values that look like API keys or tokens: AWS access key IDs, JWTs, GitHub tokens, bearer tokens, private key headers, and runs of 32 or more hex digits, except a checksum in digest notation such as `sha256:9f86d0...`.
 - Base64 that decodes to `user:password`, alone or after `Basic `.
 - Connection strings with an embedded password, such as `postgres://admin:hunter2@db:5432/app`. Obvious placeholders (`${DB_PASSWORD}`, `%s`, `<password>`, `xxx`, `password`, `pass`) don't count.

@@ -15,8 +15,7 @@ Architecture
 This analyzer uses Static Single Assignment (SSA) form to trace values and
 reports:
 
-- A parameter whose name looks sensitive (`password`, `token`, `secret`,
-  `apiKey` and similar) reaching a logging or printing call, directly, through
+- A parameter whose name names a credential reaching a logging or printing call, directly, through
   other values derived from it, or as a variadic argument (`fmt.Println(password)`,
   `log.Printf("%s", password)`, `slog.Info("login", "pw", password)`). Logging
   calls are the `fmt` print functions (`Print`, `Printf`, `Println` and their
@@ -25,6 +24,8 @@ reports:
   `logrus`, `zerolog` or `logging`.
 - A call, in a function that has a `context.Context`, to a function whose
   first parameter is a context but that is passed none.
+
+A name names a credential when its last word, splitting at underscores, hyphens and camelCase boundaries, is a credential word (`dbPassword`, `authToken`, `clientSecret`, `awsCreds`) or `key` after `api`, `private`, `access`, `secret` or `signing` (`apiKey`, `PRIVATE_KEY`). A bare `key`, names that only contain a credential word (`author`, `tokenizer`) and names where it qualifies another word (`secretName`, `tokenURL`) are not sensitive; hardcodedcreds uses the same rule.
 
 The package also exports `TaintAnalysis`, a small taint tracker that records
 each logging, SQL, command execution and file write call a marked value

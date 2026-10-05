@@ -12,12 +12,12 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"unicode"
 
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/analysis/passes/inspect"
 	"golang.org/x/tools/go/ast/inspector"
 
+	"github.com/spechtlabs/golint-sl/internal/credname"
 	"github.com/spechtlabs/golint-sl/internal/nolint"
 )
 
@@ -54,28 +54,6 @@ var Analyzer = &analysis.Analyzer{
 	Doc:      Doc,
 	Requires: []*analysis.Analyzer{inspect.Analyzer},
 	Run:      run,
-}
-
-// credentialWords are the name words that denote a credential on their own,
-// as the last word of a name: dbPassword, authToken, clientSecret.
-var credentialWords = map[string]bool{
-	"password": true, "passwd": true, "pwd": true,
-	"secret": true, "token": true, "auth": true,
-	"credential": true, "credentials": true,
-	"apikey": true, "privatekey": true, "accesskey": true, "clientsecret": true,
-}
-
-// credentialKeyQualifiers are the words that make a following "key" a
-// credential: apiKey, private_key, accessKey, secretKey, signingKey.
-var credentialKeyQualifiers = map[string]bool{
-	"api": true, "private": true, "access": true, "secret": true, "signing": true,
-}
-
-// valueSuffixWords may follow the credential word without changing what the
-// name holds: passwordValue, tokenStr, secretB64.
-var valueSuffixWords = map[string]bool{
-	"value": true, "val": true, "str": true, "string": true,
-	"raw": true, "bytes": true, "b64": true, "base64": true, "hex": true,
 }
 
 // Patterns that look like secrets
@@ -161,7 +139,7 @@ func run(pass *analysis.Pass) (any, error) {
 func checkValueSpec(reporter *nolint.Reporter, spec *ast.ValueSpec) {
 	for i, name := range spec.Names {
 		// Check variable name for a string literal value
-		if isSuspiciousName(name.Name) && i < len(spec.Values) && isCredentialLiteral(spec.Values[i]) {
+		if credname.IsCredential(name.Name) && i < len(spec.Values) && isCredentialLiteral(spec.Values[i]) {
 			reporter.Reportf(spec.Pos(),
 				"potential hardcoded credential in %q; use environment variable or secret management",
 				name.Name)
@@ -180,7 +158,7 @@ func checkAssignment(reporter *nolint.Reporter, assign *ast.AssignStmt) {
 		if !ok {
 			continue
 		}
-		if isSuspiciousName(ident.Name) && i < len(assign.Rhs) && isCredentialLiteral(assign.Rhs[i]) {
+		if credname.IsCredential(ident.Name) && i < len(assign.Rhs) && isCredentialLiteral(assign.Rhs[i]) {
 			reporter.Reportf(assign.Pos(),
 				"potential hardcoded credential in %q; use environment variable or secret management",
 				ident.Name)
@@ -195,7 +173,7 @@ func checkAssignment(reporter *nolint.Reporter, assign *ast.AssignStmt) {
 
 func checkKeyValue(reporter *nolint.Reporter, kv *ast.KeyValueExpr) {
 	// Check struct field names
-	if ident, ok := kv.Key.(*ast.Ident); ok && isSuspiciousName(ident.Name) && isCredentialLiteral(kv.Value) {
+	if ident, ok := kv.Key.(*ast.Ident); ok && credname.IsCredential(ident.Name) && isCredentialLiteral(kv.Value) {
 		reporter.Reportf(kv.Pos(),
 			"potential hardcoded credential in field %q; use environment variable or secret management",
 			ident.Name)
@@ -295,58 +273,4 @@ func hasBase64Credentials(value string) bool {
 		}
 	}
 	return false
-}
-
-// isSuspiciousName reports whether name, split into words at underscores,
-// hyphens and camelCase boundaries, names a credential: its last word is a
-// credential word (dbPassword, AUTH_TOKEN) or "key" after a qualifier such
-// as api or private (apiKey, PRIVATE_KEY). A trailing word such as Value or
-// Str is skipped first (tokenStr). Other words that merely contain a
-// credential word (author, tokenizer) or names where the credential word only
-// qualifies another (tokenURL, passwordPolicy) don't count.
-func isSuspiciousName(name string) bool {
-	words := nameWords(name)
-	if len(words) > 1 && valueSuffixWords[words[len(words)-1]] {
-		words = words[:len(words)-1]
-	}
-	if len(words) == 0 {
-		return false
-	}
-
-	last := words[len(words)-1]
-	if credentialWords[last] {
-		return true
-	}
-	return last == "key" && len(words) > 1 && credentialKeyQualifiers[words[len(words)-2]]
-}
-
-// nameWords splits an identifier into lower-case words at underscores,
-// hyphens and camelCase boundaries; an upper-case run followed by a
-// lower-case letter ends one letter early, so APIKey is "api", "key".
-func nameWords(name string) []string {
-	var words []string
-	runes := []rune(name)
-	start := 0
-	flush := func(end int) {
-		if end > start {
-			words = append(words, strings.ToLower(string(runes[start:end])))
-		}
-		start = end
-	}
-
-	for i, r := range runes {
-		switch {
-		case r == '_' || r == '-':
-			flush(i)
-			start = i + 1
-		case i > start && unicode.IsUpper(r):
-			prev := runes[i-1]
-			nextLower := i+1 < len(runes) && unicode.IsLower(runes[i+1])
-			if !unicode.IsUpper(prev) || nextLower {
-				flush(i)
-			}
-		}
-	}
-	flush(len(runes))
-	return words
 }
