@@ -2,8 +2,10 @@ package a
 
 import (
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"testing"
 	"time"
 
@@ -86,9 +88,10 @@ func namedPointer(p UserPtr) string {
 	return p.Name // want `pointer parameter "p" used without nil check`
 }
 
-// Bad: a local interface value used without a nil check.
-func callIface(d Doer) {
-	d.Do() // want `pointer parameter "d" used without nil check`
+// Good: interfaces are not pointers, whether declared here or imported.
+func callIface(d Doer, s fmt.Stringer) string {
+	d.Do()
+	return s.String()
 }
 
 // Good: error and Context interfaces, and interface literals, are skipped.
@@ -125,4 +128,119 @@ func noParams() {}
 // Good: suppressed by nolint.
 func suppressed(u *User) string {
 	return u.Name //nolint:nilcheck
+}
+
+// Good: type parameters are not pointers, even when the constraint is an
+// interface.
+func generic[T fmt.Stringer](x T) string {
+	return x.String()
+}
+
+// Good: a compound nil check with an early return covers every parameter
+// in it.
+func both(a, b *User) (string, error) {
+	if a == nil || b == nil {
+		return "", errNil
+	}
+	return a.Name + b.Name, nil
+}
+
+// Good: the use on the right of p != nil && or p == nil || is guarded, and
+// so is the body of an if whose && condition includes p != nil.
+func shortCircuit(u, v, w *User) bool {
+	if u == nil || u.Age < 0 {
+		return false
+	}
+	if v != nil && v.Age > 0 {
+		println(v.Name)
+	}
+	return w != nil && w.Age > 0
+}
+
+// Good: !(p == nil) and the else of p == nil && ... rule nil out too.
+func negated(u, v *User) {
+	if !(u == nil) {
+		println(u.Name)
+	}
+	if v == nil {
+		return
+	} else if v.Age > 0 {
+		println(v.Name)
+	}
+}
+
+// Good: a nil check whose body panics, exits, fails the test or breaks out
+// of the loop leaves the parameter non-nil afterwards.
+func terminating(a, b, c, d *User, tb testing.TB) {
+	if a == nil {
+		panic("nil")
+	}
+	if b == nil {
+		os.Exit(1)
+	}
+	if c == nil {
+		tb.Fatal("nil")
+	}
+	for range 3 {
+		if d == nil {
+			continue
+		}
+		println(d.Name)
+	}
+	println(a.Name, b.Name, c.Name)
+}
+
+// Good: a nil check that assigns a default leaves the parameter non-nil.
+func defaulted(u *User) string {
+	if u == nil {
+		u = &User{}
+	}
+	return u.Name
+}
+
+// Bad: the use before the nil check is not covered by it.
+func late(u *User) string {
+	n := u.Name // want `pointer parameter "u" used without nil check`
+	if u == nil {
+		return ""
+	}
+	return n
+}
+
+// Bad: a nil check that only logs and falls through doesn't make the use
+// after it safe.
+func logOnly(u *User) string {
+	if u == nil {
+		println("nil")
+	}
+	return u.Name // want `pointer parameter "u" used without nil check`
+}
+
+// Bad: a use outside the guarded branch is not covered by it.
+func outsideGuard(u *User) string {
+	if u != nil && u.Age > 0 {
+		println(u.Name)
+	}
+	return u.Name // want `pointer parameter "u" used without nil check`
+}
+
+// Bad: p == nil && ... being false doesn't rule nil out, nor does a nil
+// check of another parameter.
+func wrongCheck(u, v *User) {
+	if u == nil && v == nil {
+		return
+	}
+	println(u.Name) // want `pointer parameter "u" used without nil check`
+}
+
+// Good: a parameter shadowed by a local variable is a different variable.
+func shadowed(u *User) {
+	{
+		u := &User{}
+		println(u.Name)
+	}
+	if u == nil {
+		return
+	}
+	println(u.Name)
 }

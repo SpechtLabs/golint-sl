@@ -13,6 +13,7 @@ import (
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/analysis/passes/inspect"
 	"golang.org/x/tools/go/ast/inspector"
+	"golang.org/x/tools/go/types/typeutil"
 
 	"github.com/spechtlabs/golint-sl/internal/nolint"
 )
@@ -20,10 +21,19 @@ import (
 // Doc is the nilcheck analyzer's documentation.
 const Doc = `enforce nil checks on pointer parameters before use
 
-This analyzer detects:
-1. Pointer parameters used without nil check
-2. Pointer fields accessed without nil check
-3. Interface values used without nil check
+This analyzer reports a pointer parameter that is dereferenced (a field
+access or method call, *p, or p[i]) where it isn't known to be non-nil.
+A use is known to be non-nil when it comes:
+- inside an if whose condition rules nil out (if p != nil { ... },
+  if p == nil { ... } else { ... }, compound conditions with && and ||)
+- after p != nil && in the same condition, or after p == nil ||
+- after an if whose condition holds whenever p is nil and whose body
+  returns, panics, exits, breaks out, or assigns p
+
+Interface and type-parameter parameters are not pointers and are not
+checked. Framework types and parameter names that are never nil in
+practice (*testing.T, *http.Request, ctx, cfg, ...) are skipped, as are
+generated and mock files.
 
 Every pointer parameter should be validated at the start of a function:
 
@@ -62,15 +72,10 @@ var trustedPointerTypes = map[string]bool{
 	"*cobra.Command": true,
 
 	// HTTP
-	"*http.Request":       true,
-	"http.ResponseWriter": true,
-
-	// Context (interface, but trusted)
-	"context.Context": true,
+	"*http.Request": true,
 
 	// Kubernetes controller-runtime
 	"*reconcile.Request": true,
-	"reconcile.Request":  true,
 
 	// Common loggers - never nil in practice
 	"*zap.Logger":        true,
@@ -80,9 +85,6 @@ var trustedPointerTypes = map[string]bool{
 	// gRPC
 	"*grpc.Server":     true,
 	"*grpc.ClientConn": true,
-
-	// Protobuf types are validated by framework
-	"proto.Message": true,
 
 	// HTTP response - typically guaranteed non-nil when error is nil
 	"*http.Response": true,
@@ -108,8 +110,6 @@ var trustedTypePatterns = []string{
 	"v1alpha1.",
 	"v1beta1.",
 	"v1.",
-	// Generated proto types
-	".pb.go",
 }
 
 // trustedParamNames are parameter names that are typically framework-provided
@@ -142,6 +142,15 @@ var skipFilePatterns = []string{
 	"_gen.go",
 	"mock_",
 	"mocks/",
+}
+
+// terminatingCalls are the functions and methods, by name, that never return
+// to the caller: os.Exit, log.Fatal, t.Fatal, t.Skip and their variants.
+var terminatingCalls = map[string]bool{
+	"Exit": true, "Goexit": true,
+	"Fatal": true, "Fatalf": true, "Fatalln": true, "Fatalw": true,
+	"Panic": true, "Panicf": true, "Panicln": true, "Panicw": true,
+	"FailNow": true, "Skip": true, "Skipf": true, "SkipNow": true,
 }
 
 func run(pass *analysis.Pass) (any, error) {
@@ -179,65 +188,215 @@ func checkFunction(reporter *nolint.Reporter, pass *analysis.Pass, fn *ast.FuncD
 		return
 	}
 
-	// Track which parameters have been nil-checked
-	checkedParams := make(map[string]bool)
+	// The ends of the ifs after which each parameter is known to be non-nil
+	checkedAfter := collectTerminatingChecks(pass, fn.Body, ptrParams)
 
-	// First pass: find nil checks
+	// Report every parameter once, at its first unguarded use
+	reported := make(map[*types.Var]bool)
+
+	var stack []ast.Node
 	ast.Inspect(fn.Body, func(n ast.Node) bool {
-		if ifStmt, ok := n.(*ast.IfStmt); ok {
-			// Check for: if x == nil or if x != nil
-			checkedParam := extractNilCheck(ifStmt.Cond)
-			if checkedParam != "" {
-				checkedParams[checkedParam] = true
+		if n == nil {
+			stack = stack[:len(stack)-1]
+			return true
+		}
+		stack = append(stack, n)
+
+		param, verb := dereferencedParam(pass, n, ptrParams)
+		if param == nil || reported[param] || isGuarded(pass, param, stack, checkedAfter[param]) {
+			return true
+		}
+		reported[param] = true
+
+		switch verb {
+		case "indexed":
+			reporter.Reportf(n.Pos(), "pointer parameter %q indexed without nil check", param.Name())
+		default:
+			reporter.Reportf(n.Pos(),
+				"pointer parameter %q %s without nil check; add 'if %s == nil { return ... }' at function start",
+				param.Name(), verb, param.Name())
+		}
+		return true
+	})
+}
+
+// dereferencedParam returns the pointer parameter n dereferences, and how:
+// p.Field or p.Method() ("used"), *p ("dereferenced") or p[i] ("indexed").
+func dereferencedParam(pass *analysis.Pass, n ast.Node, ptrParams map[*types.Var]bool) (*types.Var, string) {
+	var x ast.Expr
+	var verb string
+
+	switch node := n.(type) {
+	case *ast.SelectorExpr:
+		x, verb = node.X, "used"
+	case *ast.StarExpr:
+		x, verb = node.X, "dereferenced"
+	case *ast.IndexExpr:
+		x, verb = node.X, "indexed"
+	default:
+		return nil, ""
+	}
+
+	param := paramOf(pass, x, ptrParams)
+	if param == nil {
+		return nil, ""
+	}
+	return param, verb
+}
+
+// paramOf returns the pointer parameter expr refers to, or nil.
+func paramOf(pass *analysis.Pass, expr ast.Expr, ptrParams map[*types.Var]bool) *types.Var {
+	ident, ok := ast.Unparen(expr).(*ast.Ident)
+	if !ok {
+		return nil
+	}
+	v, ok := pass.TypesInfo.Uses[ident].(*types.Var)
+	if !ok || !ptrParams[v] {
+		return nil
+	}
+	return v
+}
+
+// isGuarded reports whether the innermost node of stack, a use of param,
+// can only run when param is non-nil.
+func isGuarded(pass *analysis.Pass, param *types.Var, stack []ast.Node, checkedAfter []token.Pos) bool {
+	use := stack[len(stack)-1]
+	for _, end := range checkedAfter {
+		if end <= use.Pos() {
+			return true
+		}
+	}
+
+	for i := len(stack) - 2; i >= 0; i-- {
+		if guardsChild(pass, param, stack[i], stack[i+1]) {
+			return true
+		}
+	}
+	return false
+}
+
+// guardsChild reports whether parent only runs child when param is non-nil:
+// the body of an if whose condition rules nil out, the else of one whose
+// condition holds for nil, and the right operand of p != nil && or p == nil ||.
+func guardsChild(pass *analysis.Pass, param *types.Var, parent, child ast.Node) bool {
+	switch p := parent.(type) {
+	case *ast.IfStmt:
+		if child == ast.Node(p.Body) {
+			return impliesNonNil(pass, p.Cond, param, true)
+		}
+		if p.Else != nil && child == ast.Node(p.Else) {
+			return impliesNonNil(pass, p.Cond, param, false)
+		}
+
+	case *ast.BinaryExpr:
+		if child != ast.Node(p.Y) {
+			return false
+		}
+		switch p.Op {
+		case token.LAND:
+			return impliesNonNil(pass, p.X, param, true)
+		case token.LOR:
+			return impliesNonNil(pass, p.X, param, false)
+		}
+	}
+	return false
+}
+
+// impliesNonNil reports whether cond evaluating to outcome means param is
+// not nil: p != nil being true, p == nil being false, and the && and ||
+// combinations and negations of those.
+func impliesNonNil(pass *analysis.Pass, cond ast.Expr, param *types.Var, outcome bool) bool {
+	switch c := ast.Unparen(cond).(type) {
+	case *ast.UnaryExpr:
+		return c.Op == token.NOT && impliesNonNil(pass, c.X, param, !outcome)
+
+	case *ast.BinaryExpr:
+		switch c.Op {
+		case token.LAND:
+			// Both operands are true when a && b is
+			return outcome && (impliesNonNil(pass, c.X, param, true) || impliesNonNil(pass, c.Y, param, true))
+		case token.LOR:
+			// Both operands are false when a || b is
+			return !outcome && (impliesNonNil(pass, c.X, param, false) || impliesNonNil(pass, c.Y, param, false))
+		case token.NEQ:
+			return outcome && isNilComparison(pass, c, param)
+		case token.EQL:
+			return !outcome && isNilComparison(pass, c, param)
+		}
+	}
+	return false
+}
+
+// isNilComparison reports whether cmp compares param with nil, either way round.
+func isNilComparison(pass *analysis.Pass, cmp *ast.BinaryExpr, param *types.Var) bool {
+	isNil := func(e ast.Expr) bool { return pass.TypesInfo.Types[e].IsNil() }
+	ptrParams := map[*types.Var]bool{param: true}
+	return (paramOf(pass, cmp.X, ptrParams) != nil && isNil(cmp.Y)) ||
+		(paramOf(pass, cmp.Y, ptrParams) != nil && isNil(cmp.X))
+}
+
+// collectTerminatingChecks returns, per parameter, the end positions of the
+// ifs that leave it non-nil afterwards: their condition holds whenever the
+// parameter is nil, and their body leaves the function or loop, or assigns
+// the parameter.
+func collectTerminatingChecks(pass *analysis.Pass, body *ast.BlockStmt, ptrParams map[*types.Var]bool) map[*types.Var][]token.Pos {
+	checkedAfter := make(map[*types.Var][]token.Pos)
+
+	ast.Inspect(body, func(n ast.Node) bool {
+		ifStmt, ok := n.(*ast.IfStmt)
+		if !ok {
+			return true
+		}
+		for param := range ptrParams {
+			if impliesNonNil(pass, ifStmt.Cond, param, false) &&
+				(isTerminatingBlock(pass, ifStmt.Body) || assigns(pass, ifStmt.Body, param)) {
+				checkedAfter[param] = append(checkedAfter[param], ifStmt.End())
 			}
 		}
 		return true
 	})
 
-	// Second pass: find usages of unchecked pointers
-	ast.Inspect(fn.Body, func(n ast.Node) bool {
-		// Skip the nil check conditions themselves
-		if ifStmt, ok := n.(*ast.IfStmt); ok {
-			// Skip checking inside the nil-check's then block if it's an early return
-			if checkedParam := extractNilCheck(ifStmt.Cond); checkedParam != "" && isEarlyReturnBlock(ifStmt.Body) {
-				// After this if block, the param is effectively checked
-				checkedParams[checkedParam] = true
-			}
-		}
+	return checkedAfter
+}
 
-		// Check for pointer dereference
-		switch node := n.(type) {
-		case *ast.SelectorExpr:
-			// x.Field - check if x is an unchecked pointer param
-			if ident, ok := node.X.(*ast.Ident); ok && ptrParams[ident.Name] && !checkedParams[ident.Name] {
-				reporter.Reportf(node.Pos(),
-					"pointer parameter %q used without nil check; add 'if %s == nil { return ... }' at function start",
-					ident.Name, ident.Name)
-				// Mark as reported to avoid duplicate reports
-				checkedParams[ident.Name] = true
-			}
+// isTerminatingBlock checks if a block ends with a statement that doesn't
+// fall through: return, break, continue, goto, panic, or a call that exits.
+func isTerminatingBlock(pass *analysis.Pass, block *ast.BlockStmt) bool {
+	if len(block.List) == 0 {
+		return false
+	}
 
-		case *ast.StarExpr:
-			// *x - explicit dereference
-			if ident, ok := node.X.(*ast.Ident); ok && ptrParams[ident.Name] && !checkedParams[ident.Name] {
-				reporter.Reportf(node.Pos(),
-					"pointer parameter %q dereferenced without nil check; add 'if %s == nil { return ... }' at function start",
-					ident.Name, ident.Name)
-				checkedParams[ident.Name] = true
-			}
-
-		case *ast.IndexExpr:
-			// x[i] - could be slice/map from pointer
-			if ident, ok := node.X.(*ast.Ident); ok && ptrParams[ident.Name] && !checkedParams[ident.Name] {
-				reporter.Reportf(node.Pos(),
-					"pointer parameter %q indexed without nil check",
-					ident.Name)
-				checkedParams[ident.Name] = true
-			}
-		}
-
+	switch last := block.List[len(block.List)-1].(type) {
+	case *ast.ReturnStmt, *ast.BranchStmt:
 		return true
+	case *ast.ExprStmt:
+		call, ok := last.X.(*ast.CallExpr)
+		if !ok {
+			return false
+		}
+		switch callee := typeutil.Callee(pass.TypesInfo, call).(type) {
+		case *types.Builtin:
+			return callee.Name() == "panic"
+		case *types.Func:
+			return terminatingCalls[callee.Name()]
+		}
+	}
+	return false
+}
+
+// assigns reports whether block assigns param anywhere.
+func assigns(pass *analysis.Pass, block *ast.BlockStmt, param *types.Var) bool {
+	ptrParams := map[*types.Var]bool{param: true}
+	found := false
+	ast.Inspect(block, func(n ast.Node) bool {
+		if assign, ok := n.(*ast.AssignStmt); ok {
+			for _, lhs := range assign.Lhs {
+				found = found || paramOf(pass, lhs, ptrParams) != nil
+			}
+		}
+		return !found
 	})
+	return found
 }
 
 // isTrustedType checks if a type string matches any trusted type patterns
@@ -257,18 +416,14 @@ func isTrustedType(typeStr string) bool {
 	return false
 }
 
-// collectPointerParams returns a map of parameter names that are pointers
-func collectPointerParams(pass *analysis.Pass, fn *ast.FuncDecl) map[string]bool {
-	params := make(map[string]bool)
-
-	if fn.Type.Params == nil {
-		return params
-	}
+// collectPointerParams returns the parameters whose type is a pointer
+func collectPointerParams(pass *analysis.Pass, fn *ast.FuncDecl) map[*types.Var]bool {
+	params := make(map[*types.Var]bool)
 
 	for _, field := range fn.Type.Params.List {
 		// Skip trusted pointer types (framework types that are never nil),
 		// and parameters whose type is not a pointer
-		if isTrustedType(types.ExprString(field.Type)) || !isPointerParam(pass, field) {
+		if isTrustedType(types.ExprString(field.Type)) || !isPointer(pass.TypesInfo.TypeOf(field.Type)) {
 			continue
 		}
 
@@ -277,96 +432,24 @@ func collectPointerParams(pass *analysis.Pass, fn *ast.FuncDecl) map[string]bool
 			if trustedParamNames[name.Name] {
 				continue
 			}
-			params[name.Name] = true
+			if v, ok := pass.TypesInfo.Defs[name].(*types.Var); ok {
+				params[v] = true
+			}
 		}
 	}
 
 	return params
 }
 
-// isPointerParam reports whether the parameter's type is a pointer (or a
-// nilable interface) that is not trusted to be non-nil.
-func isPointerParam(pass *analysis.Pass, field *ast.Field) bool {
-	switch t := field.Type.(type) {
-	case *ast.StarExpr:
-		// *T - pointer type
-		// Check if it's a trusted type
-		return !isTrustedType("*" + types.ExprString(t.X))
-	case *ast.Ident:
-		// Could be an interface or type alias
-		// Check with type info if available
-		return isPointerIdent(pass, t)
-	case *ast.InterfaceType:
-		// interface{} can be nil - but often used with type assertions
-		// Skip for now as it causes many false positives
+// isPointer reports whether t is a pointer type, named or not. Interfaces
+// and type parameters are not pointers, even when they hold one.
+func isPointer(t types.Type) bool {
+	if t == nil {
 		return false
 	}
-
-	// pkg.Type and everything else is not treated as a pointer
-	return false
-}
-
-// isPointerIdent reports whether a named parameter type is a pointer or a
-// nilable interface other than error and Context.
-func isPointerIdent(pass *analysis.Pass, t *ast.Ident) bool {
-	obj := pass.TypesInfo.ObjectOf(t)
-	if obj == nil {
+	if _, ok := types.Unalias(t).(*types.TypeParam); ok {
 		return false
 	}
-
-	if _, ok := obj.Type().Underlying().(*types.Pointer); ok {
-		return true
-	}
-
-	// Also check for interfaces (can be nil)
-	// But skip common trusted interfaces
-	if _, ok := obj.Type().Underlying().(*types.Interface); ok {
-		// Skip error interface and context
-		return t.Name != "error" && t.Name != "Context"
-	}
-
-	return false
-}
-
-// extractNilCheck checks if a condition is a nil check and returns the variable name
-func extractNilCheck(cond ast.Expr) string {
-	binExpr, ok := cond.(*ast.BinaryExpr)
-	if !ok {
-		return ""
-	}
-
-	// Check for x == nil or x != nil
-	if binExpr.Op != token.EQL && binExpr.Op != token.NEQ {
-		return ""
-	}
-
-	var varName string
-
-	// Check X == nil or X != nil
-	if ident, ok := binExpr.X.(*ast.Ident); ok && isNilIdent(binExpr.Y) {
-		varName = ident.Name
-	}
-
-	// Check nil == X or nil != X
-	if ident, ok := binExpr.Y.(*ast.Ident); ok && isNilIdent(binExpr.X) {
-		varName = ident.Name
-	}
-
-	return varName
-}
-
-func isNilIdent(expr ast.Expr) bool {
-	ident, ok := expr.(*ast.Ident)
-	return ok && ident.Name == "nil"
-}
-
-// isEarlyReturnBlock checks if a block ends with a return statement
-func isEarlyReturnBlock(block *ast.BlockStmt) bool {
-	if len(block.List) == 0 {
-		return false
-	}
-
-	lastStmt := block.List[len(block.List)-1]
-	_, isReturn := lastStmt.(*ast.ReturnStmt)
-	return isReturn
+	_, ok := t.Underlying().(*types.Pointer)
+	return ok
 }
