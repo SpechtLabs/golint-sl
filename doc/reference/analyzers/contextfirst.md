@@ -13,6 +13,12 @@ Architecture
 ## What It Checks
 
 This analyzer detects functions where `context.Context` is not the first parameter.
+The reported position counts every parameter name, so in
+`func f(a, b int, ctx context.Context)` the context is parameter 3.
+
+Only the standard library's `context.Context` (or an alias of it) counts.
+Framework types that are also called `Context`, such as `*gin.Context`, are not
+checked.
 
 ## Why It Matters
 
