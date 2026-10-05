@@ -187,27 +187,27 @@ func TestLoadFromCases(t *testing.T) {
 		},
 		{
 			name:    "invalid yaml",
-			content: ptr("analyzers: [unclosed"),
+			content: new("analyzers: [unclosed"),
 			wantErr: true,
 		},
 		{
 			name:    "wrong type for analyzers",
-			content: ptr("analyzers: yes\n"),
+			content: new("analyzers: yes\n"),
 			wantErr: true,
 		},
 		{
 			name:    "empty file yields the default config",
-			content: ptr(""),
+			content: new(""),
 			want:    map[string]bool{"default": true},
 		},
 		{
 			name:    "no analyzers key yields the default config",
-			content: ptr("something-else: 1\n"),
+			content: new("something-else: 1\n"),
 			want:    map[string]bool{"default": true},
 		},
 		{
 			name:    "analyzers are read as given",
-			content: ptr("analyzers:\n  default: false\n  nilcheck: true\n"),
+			content: new("analyzers:\n  default: false\n  nilcheck: true\n"),
 			want:    map[string]bool{"default": false, "nilcheck": true},
 		},
 	}
@@ -316,5 +316,3 @@ func TestLoad(t *testing.T) {
 		})
 	}
 }
-
-func ptr(s string) *string { return &s }
