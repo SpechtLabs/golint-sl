@@ -69,6 +69,18 @@ func TestTrackDataFlow(t *testing.T) {
 			want:  4,
 		},
 		{
+			name:  "a value stored into a variadic argument array flows into the call",
+			src:   "package p\nfunc g(...any) {}\nfunc f(s string) { g(s) }\n",
+			value: param("f"),
+			want:  6,
+		},
+		{
+			name:  "a value stored through a pointer parameter is not followed",
+			src:   "package p\nfunc f(s string, p *string) { *p = s }\n",
+			value: param("f"),
+			want:  1,
+		},
+		{
 			name: "globals have no referrers",
 			src:  "package p\nvar G int\nfunc f() { G = 1 }\n",
 			value: func(pkg *ssa.Package) (*ssa.Function, ssa.Value) {

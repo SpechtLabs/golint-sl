@@ -35,7 +35,8 @@ func (r *FooReconciler) Reconcile(ctx context.Context, req *http.Request) error 
 	_, _ = http.Head("https://example.com")                    // want `reconciler should not make HTTP calls directly`
 	_, _ = r.client.Do(req)                                    // want `direct net/http.Do call` `should not make HTTP calls directly`
 	_, _ = sql.Open("postgres", "dsn")                         // want `direct database/sql.Open call` `reconciler should not access database directly; use repository pattern`
-	_, _ = r.db.Exec("DELETE FROM t")                          // want `reconciler should not access database directly`
+	_, _ = r.db.Exec("DELETE FROM t")                          // want `direct database/sql.\(\*DB\).Exec call` `reconciler should not access database directly`
+	_, _ = r.db.QueryContext(ctx, "SELECT 1")                  // want `direct database/sql.\(\*DB\).Query call` `reconciler should not access database directly`
 	return nil
 }
 
@@ -54,6 +55,13 @@ type BarController struct{}
 
 // Bad: any method on a controller type is treated as reconciler code.
 func (c BarController) Sync() {
+	_, _ = http.Get("https://example.com") // want `direct net/http.Get call` `should not make HTTP calls directly`
+}
+
+type KubeOperator struct{}
+
+// Bad: methods on a KubeOperator type are reconciler code too.
+func (k *KubeOperator) Sync() {
 	_, _ = http.Get("https://example.com") // want `direct net/http.Get call` `should not make HTTP calls directly`
 }
 
@@ -110,6 +118,15 @@ func formatName(first, last string, err error, r io.Reader, at int64) string {
 	_, _ = r.Read(nil)
 	local.Do(local{})
 	return strings.ToUpper(first) + " " + last
+}
+
+// Good: the constructor of a parser type is not a parse function, so it may
+// open the file the parser reads.
+type FileParser struct{ f *os.File }
+
+func NewFileParser(path string) (*FileParser, error) {
+	f, err := os.Open(path)
+	return &FileParser{f: f}, err
 }
 
 func convertUnits(v float64) float64 { return v * 2.54 }

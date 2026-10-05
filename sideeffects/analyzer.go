@@ -45,7 +45,8 @@ type Config struct {
 	ForbiddenCallsInReconcilers []string
 	// ForbiddenImportsInControllers are packages that controllers shouldn't import directly
 	ForbiddenImportsInControllers []string
-	// PureFunctionPatterns are function name patterns that should have no side effects
+	// PureFunctionPatterns are the case-insensitive name prefixes of functions
+	// that should have no side effects
 	PureFunctionPatterns []string
 }
 
@@ -63,9 +64,12 @@ var defaultConfig = Config{
 		"net/http",
 	},
 	PureFunctionPatterns: []string{
-		"*Validator",
-		"*Parser",
-		"*Formatter",
+		"validate",
+		"parse",
+		"format",
+		"compute",
+		"calculate",
+		"convert",
 	},
 }
 
@@ -105,17 +109,17 @@ func isReconcilerFunc(fn *ssa.Function) bool {
 		return false
 	}
 
-	recvType := recv.Type().String()
-
-	// Common patterns for reconcilers
+	// Common patterns for reconcilers, matched against the receiver's type
+	// name without its package and pointer
 	patterns := []string{
 		"Reconciler",
 		"Controller",
-		"*KubeOperator",
+		"KubeOperator",
 	}
 
+	recvName := typeName(recv.Type())
 	for _, pattern := range patterns {
-		if strings.Contains(recvType, pattern) {
+		if strings.Contains(recvName, pattern) {
 			return true
 		}
 	}
@@ -146,11 +150,9 @@ func checkReconcilerSideEffects(reporter *nolint.Reporter, fn *ssa.Function) {
 
 // checkReconcilerCall reports a reconciler call to a forbidden, HTTP or database function
 func checkReconcilerCall(reporter *nolint.Reporter, call *ssa.Call, callee *ssa.Function) {
-	calleeName := callee.String()
-
 	// Check against forbidden calls
 	for _, forbidden := range defaultConfig.ForbiddenCallsInReconcilers {
-		if strings.Contains(calleeName, forbidden) || matchesCallPattern(callee, forbidden) {
+		if matchesCallPattern(callee, forbidden) {
 			reporter.Reportf(call.Pos(),
 				"reconciler should not make direct %s call; use service layer abstraction",
 				forbidden)
@@ -170,26 +172,13 @@ func checkReconcilerCall(reporter *nolint.Reporter, call *ssa.Call, callee *ssa.
 	}
 }
 
-// shouldBePure checks if a function should be pure based on naming conventions
+// shouldBePure checks if a function should be pure based on naming conventions:
+// its name starts with one of the configured prefixes, such as validate or parse
 func shouldBePure(fn *ssa.Function) bool {
-	name := fn.Name()
-	for _, pattern := range defaultConfig.PureFunctionPatterns {
-		pattern = strings.TrimPrefix(pattern, "*")
-		if strings.Contains(name, pattern) {
-			return true
-		}
-	}
-
-	// Functions named "validate*", "parse*", "format*" should be pure
-	lowerName := strings.ToLower(name)
-	purePatterns := []string{"validate", "parse", "format", "compute", "calculate", "convert"}
-	for _, p := range purePatterns {
-		if strings.HasPrefix(lowerName, p) {
-			return true
-		}
-	}
-
-	return false
+	lowerName := strings.ToLower(fn.Name())
+	return slices.ContainsFunc(defaultConfig.PureFunctionPatterns, func(prefix string) bool {
+		return strings.HasPrefix(lowerName, prefix)
+	})
 }
 
 // checkPureFunctionSideEffects ensures pure functions don't have I/O side effects
@@ -261,13 +250,44 @@ func checkHandlerGlobalMutations(reporter *nolint.Reporter, fn *ssa.Function) {
 	}
 }
 
-// matchesCallPattern checks if a callee matches a forbidden pattern
+// matchesCallPattern checks if a callee matches a forbidden pattern. A pattern
+// names a function by its package path and name (net/http.Get), which also
+// matches methods of that name in the package, or a method by its package
+// path, receiver and name (database/sql.(*DB).Exec). Like a prefix, a pattern
+// also matches longer names, such as net/http.PostForm or
+// database/sql.(*DB).ExecContext.
 func matchesCallPattern(callee *ssa.Function, pattern string) bool {
-	if callee.Pkg != nil {
-		fullName := callee.Pkg.Pkg.Path() + "." + callee.Name()
-		return strings.Contains(fullName, pattern)
+	if callee.Pkg == nil {
+		return false
 	}
-	return false
+
+	pkgPath := callee.Pkg.Pkg.Path()
+	if strings.Contains(pkgPath+"."+callee.Name(), pattern) {
+		return true
+	}
+
+	recv := callee.Signature.Recv()
+	if recv == nil {
+		return false
+	}
+
+	recvName := typeName(recv.Type())
+	if _, ok := types.Unalias(recv.Type()).(*types.Pointer); ok {
+		recvName = "(*" + recvName + ")"
+	}
+
+	return strings.Contains(pkgPath+"."+recvName+"."+callee.Name(), pattern)
+}
+
+// typeName returns the name of t, or of the type t points to, without its
+// package
+func typeName(t types.Type) string {
+	t = types.Unalias(t)
+	if ptr, ok := t.(*types.Pointer); ok {
+		t = types.Unalias(ptr.Elem())
+	}
+
+	return types.TypeString(t, func(*types.Package) string { return "" })
 }
 
 // isHTTPClientCall checks if a function is an HTTP client call
@@ -465,7 +485,29 @@ func trackDataFlow(value ssa.Value, seen map[ssa.Value]bool) []ssa.Instruction {
 		if instr, ok := ref.(ssa.Value); ok {
 			flow = append(flow, trackDataFlow(instr, seen)...)
 		}
+
+		// If the value is stored into an element of a local array, track the
+		// array: that is how a value reaches a variadic call (log.Println(v))
+		// or a slice literal
+		if store, ok := ref.(*ssa.Store); ok && store.Val == value {
+			if array := localArray(store.Addr); array != nil {
+				flow = append(flow, trackDataFlow(array, seen)...)
+			}
+		}
 	}
 
 	return flow
+}
+
+// localArray returns the local array that addr points into an element of, or
+// nil if addr is anything else. An IndexAddr of an Alloc always indexes an
+// array: the Alloc is a pointer, and a slice is a value of its own.
+func localArray(addr ssa.Value) *ssa.Alloc {
+	index, ok := addr.(*ssa.IndexAddr)
+	if !ok {
+		return nil
+	}
+
+	alloc, _ := index.X.(*ssa.Alloc)
+	return alloc
 }
