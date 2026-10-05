@@ -12,11 +12,23 @@ Architecture
 
 ## What It Checks
 
-This analyzer uses Static Single Assignment (SSA) form to perform:
+This analyzer uses Static Single Assignment (SSA) form to trace values and
+reports:
 
-- Data flow analysis
-- Taint tracking
-- Value propagation analysis
+- A parameter whose name looks sensitive (`password`, `token`, `secret`,
+  `apiKey` and similar) reaching a logging or printing call, directly, through
+  other values derived from it, or as a variadic argument (`fmt.Println(password)`,
+  `log.Printf("%s", password)`, `slog.Info("login", "pw", password)`). Logging
+  calls are the `fmt` print functions (`Print`, `Printf`, `Println` and their
+  `Fprint` forms, not `Sprint` or `Errorf`) and any function of a logging
+  package: one with an import path element such as `log`, `slog`, `zap`,
+  `logrus`, `zerolog` or `logging`.
+- A call, in a function that has a `context.Context`, to a function whose
+  first parameter is a context but that is passed none.
+
+The package also exports `TaintAnalysis`, a small taint tracker that records
+each logging, SQL, command execution and file write call a marked value
+reaches.
 
 ## Why It Matters
 

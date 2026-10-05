@@ -6,6 +6,8 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+
+	"example.com/catalog"
 )
 
 type Runner struct{}
@@ -15,13 +17,16 @@ func (Runner) Exec(cmd string) {}
 func generic[T any](v T) {}
 
 func Flow(db *sql.DB, r Runner, tainted string) {
-	_ = slog.String("k", tainted)     // want `logging sink reached from Flow.tainted`
-	_ = exec.Command(tainted)         // want `command_execution sink reached from Flow.tainted`
-	r.Exec(tainted)                   // want `command_execution sink reached from Flow.tainted`
-	_, _ = db.Query(tainted)          // want `sql_query sink reached from Flow.tainted`
+	_ = slog.String("k", tainted) // want `logging sink reached from Flow.tainted`
+	_ = exec.Command(tainted)     // want `command_execution sink reached from Flow.tainted`
+	r.Exec(tainted)               // want `command_execution sink reached from Flow.tainted`
+	_, _ = db.Query(tainted)      // want `sql_query sink reached from Flow.tainted`
+	_, _ = db.Exec(tainted)       // want `sql_query sink reached from Flow.tainted`
+	catalog.Add(tainted)
 	_ = os.WriteFile(tainted, nil, 0) // want `file_write sink reached from Flow.tainted`
 	upper := strings.ToUpper(tainted)
-	_, _ = os.Create(upper) // want `file_write sink reached from Flow.tainted`
+	_, _ = os.Create(upper)         // want `file_write sink reached from Flow.tainted`
+	_ = slog.String(tainted, upper) // want `logging sink reached from Flow.tainted`
 	_ = strings.TrimSpace(tainted)
 	generic(tainted)
 	_ = os.Getenv(tainted)
