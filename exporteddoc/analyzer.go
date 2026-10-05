@@ -15,6 +15,7 @@ import (
 	"github.com/spechtlabs/golint-sl/internal/nolint"
 )
 
+// Doc is the exporteddoc analyzer's documentation.
 const Doc = `ensure exported symbols have documentation comments
 
 Exported functions, types, and variables should have documentation
@@ -33,6 +34,7 @@ Bad:
     // handles requests  // Doesn't start with function name
     func ProcessRequest(...) ...`
 
+// Analyzer reports exported symbols without documentation comments.
 var Analyzer = &analysis.Analyzer{
 	Name:     "exporteddoc",
 	Doc:      Doc,
@@ -40,9 +42,9 @@ var Analyzer = &analysis.Analyzer{
 	Run:      run,
 }
 
-func run(pass *analysis.Pass) (interface{}, error) {
+func run(pass *analysis.Pass) (any, error) {
 	reporter := nolint.NewReporter(pass)
-	inspect := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
+	insp := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
 
 	// Skip test files
 	var inTestFile bool
@@ -53,7 +55,7 @@ func run(pass *analysis.Pass) (interface{}, error) {
 		(*ast.GenDecl)(nil),
 	}
 
-	inspect.Preorder(nodeFilter, func(n ast.Node) {
+	insp.Preorder(nodeFilter, func(n ast.Node) {
 		switch node := n.(type) {
 		case *ast.File:
 			filename := pass.Fset.Position(node.Pos()).Filename
@@ -107,54 +109,63 @@ func checkGenDecl(reporter *nolint.Reporter, decl *ast.GenDecl) {
 	for _, spec := range decl.Specs {
 		switch s := spec.(type) {
 		case *ast.TypeSpec:
-			if !ast.IsExported(s.Name.Name) {
-				continue
-			}
-
-			// Check for documentation
-			doc := s.Doc
-			if doc == nil {
-				doc = decl.Doc
-			}
-
-			if doc == nil || len(doc.List) == 0 {
-				reporter.Reportf(s.Pos(),
-					"exported type %s should have a documentation comment",
-					s.Name.Name)
-				continue
-			}
-
-			// Check that doc starts with type name
-			firstLine := doc.List[0].Text
-			if !strings.HasPrefix(firstLine, "// "+s.Name.Name) {
-				reporter.Reportf(doc.Pos(),
-					"documentation for %s should start with %q",
-					s.Name.Name, s.Name.Name)
-			}
-
+			checkTypeSpecDoc(reporter, decl, s)
 		case *ast.ValueSpec:
-			// Check exported variables and constants
-			for _, name := range s.Names {
-				if !ast.IsExported(name.Name) {
-					continue
-				}
+			checkValueSpecDoc(reporter, decl, s)
+		}
+	}
+}
 
-				// Skip error variables (Err*)
-				if strings.HasPrefix(name.Name, "Err") {
-					continue
-				}
+// checkTypeSpecDoc checks the documentation of an exported type declared in decl.
+func checkTypeSpecDoc(reporter *nolint.Reporter, decl *ast.GenDecl, s *ast.TypeSpec) {
+	if !ast.IsExported(s.Name.Name) {
+		return
+	}
 
-				doc := s.Doc
-				if doc == nil {
-					doc = decl.Doc
-				}
+	// Check for documentation
+	doc := s.Doc
+	if doc == nil {
+		doc = decl.Doc
+	}
 
-				if doc == nil || len(doc.List) == 0 {
-					reporter.Reportf(name.Pos(),
-						"exported variable %s should have a documentation comment",
-						name.Name)
-				}
-			}
+	if doc == nil || len(doc.List) == 0 {
+		reporter.Reportf(s.Pos(),
+			"exported type %s should have a documentation comment",
+			s.Name.Name)
+		return
+	}
+
+	// Check that doc starts with type name
+	firstLine := doc.List[0].Text
+	if !strings.HasPrefix(firstLine, "// "+s.Name.Name) {
+		reporter.Reportf(doc.Pos(),
+			"documentation for %s should start with %q",
+			s.Name.Name, s.Name.Name)
+	}
+}
+
+// checkValueSpecDoc checks that the exported variables and constants declared
+// in decl are documented.
+func checkValueSpecDoc(reporter *nolint.Reporter, decl *ast.GenDecl, s *ast.ValueSpec) {
+	for _, name := range s.Names {
+		if !ast.IsExported(name.Name) {
+			continue
+		}
+
+		// Skip error variables (Err*)
+		if strings.HasPrefix(name.Name, "Err") {
+			continue
+		}
+
+		doc := s.Doc
+		if doc == nil {
+			doc = decl.Doc
+		}
+
+		if doc == nil || len(doc.List) == 0 {
+			reporter.Reportf(name.Pos(),
+				"exported variable %s should have a documentation comment",
+				name.Name)
 		}
 	}
 }

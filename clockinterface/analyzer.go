@@ -23,6 +23,7 @@ import (
 	"github.com/spechtlabs/golint-sl/internal/nolint"
 )
 
+// Doc is the clockinterface analyzer's documentation.
 const Doc = `enforce clock interface pattern for testable time operations
 
 This analyzer detects direct usage of time.Now() and time.After() in
@@ -48,6 +49,7 @@ Example of the recommended pattern:
 
 Functions that need time should accept a Clock parameter or have it injected.`
 
+// Analyzer enforces an injected clock interface for testable time operations.
 var Analyzer = &analysis.Analyzer{
 	Name:     "clockinterface",
 	Doc:      Doc,
@@ -83,61 +85,36 @@ var ExemptFunctions = []string{
 	"String", // String conversion functions
 }
 
-func run(pass *analysis.Pass) (interface{}, error) {
+func run(pass *analysis.Pass) (any, error) {
 	reporter := nolint.NewReporter(pass)
-	inspect := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
+	insp := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
 
-	// Check if package is exempt
-	pkgPath := pass.Pkg.Path()
-	for _, exempt := range ExemptPackages {
-		if strings.HasSuffix(pkgPath, exempt) || strings.Contains(pkgPath, exempt+"/") {
-			return nil, nil
-		}
+	if isExemptPackage(pass.Pkg.Path()) {
+		return nil, nil
 	}
 
-	// Check if package path matches exempt patterns
-	for _, pattern := range ExemptPackagePaths {
-		if strings.Contains(pkgPath, pattern) {
-			return nil, nil
-		}
-	}
-
-	// Track if there's a Clock interface defined
-	hasClockInterface := false
 	nodeFilter := []ast.Node{
 		(*ast.TypeSpec)(nil),
 		(*ast.FuncDecl)(nil),
 	}
 
 	// First pass: check for Clock interface
-	inspect.Preorder(nodeFilter, func(n ast.Node) {
-		if ts, ok := n.(*ast.TypeSpec); ok {
-			if ts.Name.Name == "Clock" {
-				if _, ok := ts.Type.(*ast.InterfaceType); ok {
-					hasClockInterface = true
-				}
-			}
+	hasClockInterface := false
+	insp.Preorder(nodeFilter, func(n ast.Node) {
+		if ts, ok := n.(*ast.TypeSpec); ok && isClockInterface(ts) {
+			hasClockInterface = true
 		}
 	})
 
 	// Second pass: find time.Now() and time.After() calls
-	inspect.Preorder(nodeFilter, func(n ast.Node) {
+	insp.Preorder(nodeFilter, func(n ast.Node) {
 		fn, ok := n.(*ast.FuncDecl)
 		if !ok {
 			return
 		}
 
-		// Skip exempt functions
-		if fn.Name != nil {
-			for _, exempt := range ExemptFunctions {
-				if strings.HasPrefix(fn.Name.Name, exempt) {
-					return
-				}
-			}
-		}
-
-		// Skip if function already accepts a Clock parameter
-		if hasClockParameter(fn) {
+		// Skip exempt functions and functions that already accept a Clock parameter
+		if isExemptFunction(fn) || hasClockParameter(fn) {
 			return
 		}
 
@@ -147,56 +124,94 @@ func run(pass *analysis.Pass) (interface{}, error) {
 		}
 
 		ast.Inspect(fn.Body, func(n ast.Node) bool {
-			call, ok := n.(*ast.CallExpr)
-			if !ok {
-				return true
+			if call, ok := n.(*ast.CallExpr); ok {
+				checkTimeCall(reporter, call, hasClockInterface)
 			}
-
-			sel, ok := call.Fun.(*ast.SelectorExpr)
-			if !ok {
-				return true
-			}
-
-			ident, ok := sel.X.(*ast.Ident)
-			if !ok {
-				return true
-			}
-
-			if ident.Name == "time" {
-				switch sel.Sel.Name {
-				case "Now":
-					suggestion := "inject a Clock interface for testability"
-					if hasClockInterface {
-						suggestion = "use the Clock interface defined in this package"
-					}
-					reporter.Reportf(call.Pos(),
-						"direct time.Now() call in business logic; %s", suggestion)
-
-				case "After":
-					suggestion := "inject a Clock interface with After() method"
-					if hasClockInterface {
-						suggestion = "use the Clock.After() method instead"
-					}
-					reporter.Reportf(call.Pos(),
-						"direct time.After() call; %s", suggestion)
-
-				case "Sleep":
-					reporter.Reportf(call.Pos(),
-						"time.Sleep() in business logic is usually a code smell; "+
-							"consider using context with timeout, ticker, or returning a requeue duration")
-
-				case "NewTicker", "NewTimer":
-					reporter.Reportf(call.Pos(),
-						"direct time.%s() call; consider abstracting time operations for testability",
-						sel.Sel.Name)
-				}
-			}
-
 			return true
 		})
 	})
 
 	return nil, nil
+}
+
+// isExemptPackage reports whether time.Now is acceptable in the package at pkgPath.
+func isExemptPackage(pkgPath string) bool {
+	for _, exempt := range ExemptPackages {
+		if strings.HasSuffix(pkgPath, exempt) || strings.Contains(pkgPath, exempt+"/") {
+			return true
+		}
+	}
+
+	for _, pattern := range ExemptPackagePaths {
+		if strings.Contains(pkgPath, pattern) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// isClockInterface reports whether ts declares an interface named Clock.
+func isClockInterface(ts *ast.TypeSpec) bool {
+	if ts.Name.Name != "Clock" {
+		return false
+	}
+	_, ok := ts.Type.(*ast.InterfaceType)
+	return ok
+}
+
+// isExemptFunction reports whether fn's name marks it as exempt from the check.
+func isExemptFunction(fn *ast.FuncDecl) bool {
+	if fn.Name == nil {
+		return false
+	}
+	for _, exempt := range ExemptFunctions {
+		if strings.HasPrefix(fn.Name.Name, exempt) {
+			return true
+		}
+	}
+	return false
+}
+
+// checkTimeCall reports call if it is a direct call into the time package.
+func checkTimeCall(reporter *nolint.Reporter, call *ast.CallExpr, hasClockInterface bool) {
+	sel, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok {
+		return
+	}
+
+	ident, ok := sel.X.(*ast.Ident)
+	if !ok || ident.Name != "time" {
+		return
+	}
+
+	switch sel.Sel.Name {
+	case "Now":
+		suggestion := "inject a Clock interface for testability"
+		if hasClockInterface {
+			suggestion = "use the Clock interface defined in this package"
+		}
+		reporter.Reportf(call.Pos(),
+			"direct time.Now() call in business logic; %s", suggestion)
+
+	case "After":
+		suggestion := "inject a Clock interface with After() method"
+		if hasClockInterface {
+			suggestion = "use the Clock.After() method instead"
+		}
+		reporter.Reportf(call.Pos(),
+			"direct time.After() call; %s", suggestion)
+
+	case "Sleep":
+		reporter.Reportf(call.Pos(),
+			"time.Sleep() in business logic is usually a code smell; "+
+				"consider using context with timeout, ticker, or returning a requeue duration")
+
+	case "NewTicker", "NewTimer":
+		reporter.Reportf(call.Pos(),
+			"direct time.%s() call; consider abstracting time operations for testability",
+			sel.Sel.Name)
+	}
 }
 
 // hasClockParameter checks if a function has a Clock parameter
@@ -234,14 +249,14 @@ type ClockPatternInfo struct {
 // AnalyzeClockPattern returns information about clock pattern usage
 func AnalyzeClockPattern(pass *analysis.Pass) *ClockPatternInfo {
 	info := &ClockPatternInfo{}
-	inspect := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
+	insp := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
 
 	nodeFilter := []ast.Node{
 		(*ast.TypeSpec)(nil),
 		(*ast.CallExpr)(nil),
 	}
 
-	inspect.Preorder(nodeFilter, func(n ast.Node) {
+	insp.Preorder(nodeFilter, func(n ast.Node) {
 		switch node := n.(type) {
 		case *ast.TypeSpec:
 			name := node.Name.Name

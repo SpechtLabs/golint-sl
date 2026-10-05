@@ -16,6 +16,7 @@ import (
 	"github.com/spechtlabs/golint-sl/internal/nolint"
 )
 
+// Doc is the todotracker analyzer's documentation.
 const Doc = `ensure TODO/FIXME comments have owners and context
 
 Orphaned TODOs without owners tend to never get done. This analyzer
@@ -33,6 +34,7 @@ Bad:
     // FIXME
     // TODO - make this better`
 
+// Analyzer reports TODO and FIXME comments without an owner or context.
 var Analyzer = &analysis.Analyzer{
 	Name:     "todotracker",
 	Doc:      Doc,
@@ -46,15 +48,15 @@ var wellFormedTODO = regexp.MustCompile(`(?i)(TODO|FIXME)\s*\([^)]+\)\s*:\s*\S+`
 // Pattern to match any TODO/FIXME
 var anyTODO = regexp.MustCompile(`(?i)(TODO|FIXME)`)
 
-func run(pass *analysis.Pass) (interface{}, error) {
+func run(pass *analysis.Pass) (any, error) {
 	reporter := nolint.NewReporter(pass)
-	inspect := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
+	insp := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
 
 	nodeFilter := []ast.Node{
 		(*ast.File)(nil),
 	}
 
-	inspect.Preorder(nodeFilter, func(n ast.Node) {
+	insp.Preorder(nodeFilter, func(n ast.Node) {
 		file := n.(*ast.File)
 
 		for _, cg := range file.Comments {
@@ -87,15 +89,16 @@ func checkComment(reporter *nolint.Reporter, comment *ast.Comment) {
 	}
 
 	// Determine what's wrong
-	if !strings.Contains(text, "(") {
+	switch {
+	case !strings.Contains(text, "("):
 		reporter.Reportf(comment.Pos(),
 			"%s without owner; use %s(username): description",
 			todoType, todoType)
-	} else if !strings.Contains(text, ":") {
+	case !strings.Contains(text, ":"):
 		reporter.Reportf(comment.Pos(),
 			"%s without description; use %s(owner): what needs to be done",
 			todoType, todoType)
-	} else {
+	default:
 		// Has parens and colon but doesn't match pattern - likely malformed
 		reporter.Reportf(comment.Pos(),
 			"%s appears malformed; use format: %s(owner): description",

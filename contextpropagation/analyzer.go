@@ -14,6 +14,7 @@ import (
 	"github.com/spechtlabs/golint-sl/internal/nolint"
 )
 
+// Doc is the contextpropagation analyzer's documentation.
 const Doc = `ensure context.Context is properly propagated through call chains
 
 This analyzer detects:
@@ -29,6 +30,7 @@ Proper context propagation is critical for:
 - Cancellation propagation
 - Request-scoped values (user info, request ID)`
 
+// Analyzer reports context.Context that is not propagated through call chains.
 var Analyzer = &analysis.Analyzer{
 	Name:     "contextpropagation",
 	Doc:      Doc,
@@ -36,14 +38,18 @@ var Analyzer = &analysis.Analyzer{
 	Run:      run,
 }
 
+// httpRequestWithContextAdvice is the advice for net/http package-level
+// request functions.
+const httpRequestWithContextAdvice = "use http.NewRequestWithContext and client.Do instead"
+
 // packageLevelCallsWithoutContext are package-level functions that should use context variants
 // These are explicit package.Function patterns that we know are problematic
 var packageLevelCallsWithoutContext = map[string]string{
 	// net/http package-level functions (these are the problematic ones)
-	"http.Get":      "use http.NewRequestWithContext and client.Do instead",
-	"http.Post":     "use http.NewRequestWithContext and client.Do instead",
-	"http.PostForm": "use http.NewRequestWithContext and client.Do instead",
-	"http.Head":     "use http.NewRequestWithContext and client.Do instead",
+	"http.Get":      httpRequestWithContextAdvice,
+	"http.Post":     httpRequestWithContextAdvice,
+	"http.PostForm": httpRequestWithContextAdvice,
+	"http.Head":     httpRequestWithContextAdvice,
 
 	// os/exec
 	"exec.Command": "use exec.CommandContext instead",
@@ -100,16 +106,16 @@ func isMockFunction(fn *ast.FuncDecl) bool {
 	return strings.HasPrefix(typeName, "Mock") || strings.HasPrefix(typeName, "mock")
 }
 
-func run(pass *analysis.Pass) (interface{}, error) {
+func run(pass *analysis.Pass) (any, error) {
 	reporter := nolint.NewReporter(pass)
-	inspect := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
+	insp := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
 	isMockPkg := isMockPackage(pass)
 
 	nodeFilter := []ast.Node{
 		(*ast.FuncDecl)(nil),
 	}
 
-	inspect.Preorder(nodeFilter, func(n ast.Node) {
+	insp.Preorder(nodeFilter, func(n ast.Node) {
 		fn, ok := n.(*ast.FuncDecl)
 		if !ok || fn.Body == nil {
 			return
@@ -211,28 +217,17 @@ func checkContextUsed(reporter *nolint.Reporter, fn *ast.FuncDecl, ctxParam stri
 		switch node := n.(type) {
 		case *ast.AssignStmt:
 			// Check if context is being stored in a field (e.g., m.ctx = ctx)
-			for i, rhs := range node.Rhs {
-				if ident, ok := rhs.(*ast.Ident); ok && ident.Name == ctxParam {
-					// Check if LHS is a field selector (m.ctx, s.context, etc.)
-					if i < len(node.Lhs) {
-						if _, ok := node.Lhs[i].(*ast.SelectorExpr); ok {
-							storedInField = true
-						}
-					}
-				}
+			if storesIdentInField(node, ctxParam) {
+				storedInField = true
 			}
 
 		case *ast.CallExpr:
 			hasFunctionCalls = true
 
 			// Check if this is a method call on the context (ctx.Done(), ctx.Err(), etc.)
-			if sel, ok := node.Fun.(*ast.SelectorExpr); ok {
-				if ident, ok := sel.X.(*ast.Ident); ok {
-					if ident.Name == ctxParam && contextMethods[sel.Sel.Name] {
-						usedContextMethod = true
-						return true
-					}
-				}
+			if isContextMethodCall(node, ctxParam) {
+				usedContextMethod = true
+				return true
 			}
 
 			// Check if ctx is passed as an argument
@@ -281,15 +276,39 @@ func checkContextUsed(reporter *nolint.Reporter, fn *ast.FuncDecl, ctxParam stri
 	}
 }
 
+// storesIdentInField reports whether assign stores the identifier name into a
+// field selector (m.ctx, s.context, etc.).
+func storesIdentInField(assign *ast.AssignStmt, name string) bool {
+	for i, rhs := range assign.Rhs {
+		ident, ok := rhs.(*ast.Ident)
+		if !ok || ident.Name != name || i >= len(assign.Lhs) {
+			continue
+		}
+		if _, ok := assign.Lhs[i].(*ast.SelectorExpr); ok {
+			return true
+		}
+	}
+	return false
+}
+
+// isContextMethodCall reports whether call is a context method call on the
+// context parameter (ctx.Done(), ctx.Err(), etc.).
+func isContextMethodCall(call *ast.CallExpr, ctxParam string) bool {
+	sel, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok {
+		return false
+	}
+	ident, ok := sel.X.(*ast.Ident)
+	return ok && ident.Name == ctxParam && contextMethods[sel.Sel.Name]
+}
+
 // containsIdent checks if an expression contains an identifier with the given name
 func containsIdent(expr ast.Expr, name string) bool {
 	found := false
 	ast.Inspect(expr, func(n ast.Node) bool {
-		if ident, ok := n.(*ast.Ident); ok {
-			if ident.Name == name {
-				found = true
-				return false
-			}
+		if ident, ok := n.(*ast.Ident); ok && ident.Name == name {
+			found = true
+			return false
 		}
 		return true
 	})
@@ -311,8 +330,7 @@ func isSimpleFunction(fn *ast.FuncDecl) bool {
 	// Functions that only have assignments and returns
 	hasOnlySimpleStmts := true
 	ast.Inspect(fn.Body, func(n ast.Node) bool {
-		switch n.(type) {
-		case *ast.CallExpr:
+		if _, ok := n.(*ast.CallExpr); ok {
 			// Has function calls, not simple
 			hasOnlySimpleStmts = false
 			return false
@@ -386,12 +404,10 @@ func checkCallsWithoutContext(reporter *nolint.Reporter, fn *ast.FuncDecl, ctxPa
 		}
 
 		methodName := sel.Sel.Name
-		if advice, needsContext := methodsRequiringContext[methodName]; needsContext {
-			// Check if first argument is context
-			if !firstArgIsContext(call, ctxParam) {
-				reporter.Reportf(call.Pos(),
-					"%s() called without context as first argument; %s", methodName, advice)
-			}
+		// Check if first argument is context
+		if advice, needsContext := methodsRequiringContext[methodName]; needsContext && !firstArgIsContext(call, ctxParam) {
+			reporter.Reportf(call.Pos(),
+				"%s() called without context as first argument; %s", methodName, advice)
 		}
 
 		return true
@@ -407,21 +423,13 @@ func firstArgIsContext(call *ast.CallExpr, ctxParam string) bool {
 	firstArg := call.Args[0]
 
 	// Check if it's the context parameter directly
-	if ident, ok := firstArg.(*ast.Ident); ok {
-		if ident.Name == ctxParam || ident.Name == "ctx" {
-			return true
-		}
+	if ident, ok := firstArg.(*ast.Ident); ok && (ident.Name == ctxParam || ident.Name == "ctx") {
+		return true
 	}
 
 	// Check for context.Background(), context.TODO(), or context.WithX()
-	if call, ok := firstArg.(*ast.CallExpr); ok {
-		if sel, ok := call.Fun.(*ast.SelectorExpr); ok {
-			if ident, ok := sel.X.(*ast.Ident); ok {
-				if ident.Name == "context" {
-					return true
-				}
-			}
-		}
+	if isContextPackageCall(firstArg) {
+		return true
 	}
 
 	// Check for derived contexts like ctx.WithValue, etc.
@@ -431,6 +439,21 @@ func firstArgIsContext(call *ast.CallExpr, ctxParam string) bool {
 	}
 
 	return false
+}
+
+// isContextPackageCall reports whether expr is a call into the context
+// package (context.Background(), context.WithX(), etc.).
+func isContextPackageCall(expr ast.Expr) bool {
+	call, ok := expr.(*ast.CallExpr)
+	if !ok {
+		return false
+	}
+	sel, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok {
+		return false
+	}
+	ident, ok := sel.X.(*ast.Ident)
+	return ok && ident.Name == "context"
 }
 
 // checkContextAwareCalls checks for calls that have context-aware variants
@@ -476,11 +499,9 @@ func checkContextAwareCalls(reporter *nolint.Reporter, fn *ast.FuncDecl, hasCont
 		methodName := sel.Sel.Name
 
 		// Check if this is a method that has a Context variant and context isn't being passed
-		if advice, needsContext := methodsRequiringContext[methodName]; needsContext {
-			if !firstArgIsContext(call, ctxParam) {
-				reporter.Reportf(call.Pos(),
-					"%s() called without context; %s", methodName, advice)
-			}
+		if advice, needsContext := methodsRequiringContext[methodName]; needsContext && !firstArgIsContext(call, ctxParam) {
+			reporter.Reportf(call.Pos(),
+				"%s() called without context; %s", methodName, advice)
 		}
 
 		return true
@@ -525,13 +546,13 @@ type ContextPropagationInfo struct {
 // AnalyzeContextPropagation returns information about context usage
 func AnalyzeContextPropagation(pass *analysis.Pass) *ContextPropagationInfo {
 	info := &ContextPropagationInfo{}
-	inspect := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
+	insp := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
 
 	nodeFilter := []ast.Node{
 		(*ast.FuncDecl)(nil),
 	}
 
-	inspect.Preorder(nodeFilter, func(n ast.Node) {
+	insp.Preorder(nodeFilter, func(n ast.Node) {
 		fn, ok := n.(*ast.FuncDecl)
 		if !ok {
 			return

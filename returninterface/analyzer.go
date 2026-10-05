@@ -16,6 +16,7 @@ import (
 	"github.com/spechtlabs/golint-sl/internal/nolint"
 )
 
+// Doc is the returninterface analyzer's documentation.
 const Doc = `enforce "accept interfaces, return structs" principle
 
 Functions should:
@@ -45,6 +46,7 @@ Exceptions:
 - Standard library interfaces (io.Reader, error)
 - Methods implementing interfaces`
 
+// Analyzer enforces the "accept interfaces, return structs" principle.
 var Analyzer = &analysis.Analyzer{
 	Name:     "returninterface",
 	Doc:      Doc,
@@ -88,15 +90,15 @@ var factoryPatterns = []string{
 	"Connect", // Connect() Connection
 }
 
-func run(pass *analysis.Pass) (interface{}, error) {
+func run(pass *analysis.Pass) (any, error) {
 	reporter := nolint.NewReporter(pass)
-	inspect := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
+	insp := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
 
 	nodeFilter := []ast.Node{
 		(*ast.FuncDecl)(nil),
 	}
 
-	inspect.Preorder(nodeFilter, func(n ast.Node) {
+	insp.Preorder(nodeFilter, func(n ast.Node) {
 		fn, ok := n.(*ast.FuncDecl)
 		if !ok {
 			return

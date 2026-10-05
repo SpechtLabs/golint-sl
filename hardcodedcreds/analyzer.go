@@ -6,6 +6,7 @@ package hardcodedcreds
 
 import (
 	"go/ast"
+	"go/token"
 	"regexp"
 	"strings"
 
@@ -16,6 +17,7 @@ import (
 	"github.com/spechtlabs/golint-sl/internal/nolint"
 )
 
+// Doc is the hardcodedcreds analyzer's documentation.
 const Doc = `detect potential hardcoded credentials and secrets
 
 Hardcoded credentials are a security vulnerability. This analyzer
@@ -31,6 +33,7 @@ Secrets should come from:
 - Secret management systems (Vault, AWS Secrets Manager)
 - Kubernetes Secrets`
 
+// Analyzer reports potential hardcoded credentials and secrets.
 var Analyzer = &analysis.Analyzer{
 	Name:     "hardcodedcreds",
 	Doc:      Doc,
@@ -65,9 +68,9 @@ var secretPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`-----BEGIN\s+(RSA\s+)?PRIVATE\s+KEY-----`),
 }
 
-func run(pass *analysis.Pass) (interface{}, error) {
+func run(pass *analysis.Pass) (any, error) {
 	reporter := nolint.NewReporter(pass)
-	inspect := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
+	insp := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
 
 	// Build a set of test files to skip
 	testFiles := make(map[string]bool)
@@ -90,7 +93,7 @@ func run(pass *analysis.Pass) (interface{}, error) {
 		(*ast.KeyValueExpr)(nil),
 	}
 
-	inspect.Preorder(nodeFilter, func(n ast.Node) {
+	insp.Preorder(nodeFilter, func(n ast.Node) {
 		// Skip test files - mock credentials are standard practice in tests
 		if isTestFile(n) {
 			return
@@ -111,18 +114,11 @@ func run(pass *analysis.Pass) (interface{}, error) {
 
 func checkValueSpec(reporter *nolint.Reporter, spec *ast.ValueSpec) {
 	for i, name := range spec.Names {
-		// Check variable name
-		if isSuspiciousName(name.Name) {
-			// Check if it has a string literal value
-			if i < len(spec.Values) {
-				if lit, ok := spec.Values[i].(*ast.BasicLit); ok {
-					if lit.Kind.String() == "STRING" && len(lit.Value) > 5 {
-						reporter.Reportf(spec.Pos(),
-							"potential hardcoded credential in %q; use environment variable or secret management",
-							name.Name)
-					}
-				}
-			}
+		// Check variable name for a string literal value
+		if isSuspiciousName(name.Name) && i < len(spec.Values) && isCredentialLiteral(spec.Values[i]) {
+			reporter.Reportf(spec.Pos(),
+				"potential hardcoded credential in %q; use environment variable or secret management",
+				name.Name)
 		}
 
 		// Check value for secret patterns
@@ -134,18 +130,14 @@ func checkValueSpec(reporter *nolint.Reporter, spec *ast.ValueSpec) {
 
 func checkAssignment(reporter *nolint.Reporter, assign *ast.AssignStmt) {
 	for i, lhs := range assign.Lhs {
-		if ident, ok := lhs.(*ast.Ident); ok {
-			if isSuspiciousName(ident.Name) {
-				if i < len(assign.Rhs) {
-					if lit, ok := assign.Rhs[i].(*ast.BasicLit); ok {
-						if lit.Kind.String() == "STRING" && len(lit.Value) > 5 {
-							reporter.Reportf(assign.Pos(),
-								"potential hardcoded credential in %q; use environment variable or secret management",
-								ident.Name)
-						}
-					}
-				}
-			}
+		ident, ok := lhs.(*ast.Ident)
+		if !ok {
+			continue
+		}
+		if isSuspiciousName(ident.Name) && i < len(assign.Rhs) && isCredentialLiteral(assign.Rhs[i]) {
+			reporter.Reportf(assign.Pos(),
+				"potential hardcoded credential in %q; use environment variable or secret management",
+				ident.Name)
 		}
 	}
 
@@ -157,24 +149,25 @@ func checkAssignment(reporter *nolint.Reporter, assign *ast.AssignStmt) {
 
 func checkKeyValue(reporter *nolint.Reporter, kv *ast.KeyValueExpr) {
 	// Check struct field names
-	if ident, ok := kv.Key.(*ast.Ident); ok {
-		if isSuspiciousName(ident.Name) {
-			if lit, ok := kv.Value.(*ast.BasicLit); ok {
-				if lit.Kind.String() == "STRING" && len(lit.Value) > 5 {
-					reporter.Reportf(kv.Pos(),
-						"potential hardcoded credential in field %q; use environment variable or secret management",
-						ident.Name)
-				}
-			}
-		}
+	if ident, ok := kv.Key.(*ast.Ident); ok && isSuspiciousName(ident.Name) && isCredentialLiteral(kv.Value) {
+		reporter.Reportf(kv.Pos(),
+			"potential hardcoded credential in field %q; use environment variable or secret management",
+			ident.Name)
 	}
 
 	checkExprForSecrets(reporter, kv.Value)
 }
 
+// isCredentialLiteral reports whether expr is a string literal long enough to
+// hold a credential.
+func isCredentialLiteral(expr ast.Expr) bool {
+	lit, ok := expr.(*ast.BasicLit)
+	return ok && lit.Kind == token.STRING && len(lit.Value) > 5
+}
+
 func checkExprForSecrets(reporter *nolint.Reporter, expr ast.Expr) {
 	lit, ok := expr.(*ast.BasicLit)
-	if !ok || lit.Kind.String() != "STRING" {
+	if !ok || lit.Kind != token.STRING {
 		return
 	}
 

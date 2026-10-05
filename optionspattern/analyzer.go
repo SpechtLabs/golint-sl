@@ -14,6 +14,7 @@ import (
 	"github.com/spechtlabs/golint-sl/internal/nolint"
 )
 
+// Doc is the optionspattern analyzer's documentation.
 const Doc = `enforce consistent functional options pattern usage
 
 This analyzer ensures:
@@ -24,6 +25,7 @@ This analyzer ensures:
 
 The functional options pattern provides a clean, extensible API for configuration.`
 
+// Analyzer enforces consistent use of the functional options pattern.
 var Analyzer = &analysis.Analyzer{
 	Name:     "optionspattern",
 	Doc:      Doc,
@@ -44,9 +46,9 @@ var validOptionFuncPrefixes = []string{
 	"Set",     // SetTimeout, SetMaxRetries
 }
 
-func run(pass *analysis.Pass) (interface{}, error) {
+func run(pass *analysis.Pass) (any, error) {
 	reporter := nolint.NewReporter(pass)
-	inspect := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
+	insp := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
 
 	// Track Option types for validation
 	optionTypes := make(map[string]bool)
@@ -57,18 +59,19 @@ func run(pass *analysis.Pass) (interface{}, error) {
 	}
 
 	// First pass: collect Option type definitions
-	inspect.Preorder(nodeFilter, func(n ast.Node) {
-		if ts, ok := n.(*ast.TypeSpec); ok {
-			if strings.HasSuffix(ts.Name.Name, "Option") || ts.Name.Name == "Option" {
-				if _, ok := ts.Type.(*ast.FuncType); ok {
-					optionTypes[ts.Name.Name] = true
-				}
-			}
+	insp.Preorder(nodeFilter, func(n ast.Node) {
+		ts, ok := n.(*ast.TypeSpec)
+		if !ok {
+			return
+		}
+		isOptionName := strings.HasSuffix(ts.Name.Name, "Option") || ts.Name.Name == "Option"
+		if _, isFunc := ts.Type.(*ast.FuncType); isOptionName && isFunc {
+			optionTypes[ts.Name.Name] = true
 		}
 	})
 
 	// Second pass: check functions
-	inspect.Preorder(nodeFilter, func(n ast.Node) {
+	insp.Preorder(nodeFilter, func(n ast.Node) {
 		switch node := n.(type) {
 		case *ast.TypeSpec:
 			checkOptionTypeDefinition(reporter, node)
@@ -340,14 +343,14 @@ type OptionPatternInfo struct {
 // AnalyzeOptionPatterns returns information about option pattern usage
 func AnalyzeOptionPatterns(pass *analysis.Pass) *OptionPatternInfo {
 	info := &OptionPatternInfo{}
-	inspect := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
+	insp := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
 
 	nodeFilter := []ast.Node{
 		(*ast.TypeSpec)(nil),
 		(*ast.FuncDecl)(nil),
 	}
 
-	inspect.Preorder(nodeFilter, func(n ast.Node) {
+	insp.Preorder(nodeFilter, func(n ast.Node) {
 		switch node := n.(type) {
 		case *ast.TypeSpec:
 			if strings.Contains(node.Name.Name, "Option") {

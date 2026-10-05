@@ -16,6 +16,7 @@ import (
 	"github.com/spechtlabs/golint-sl/internal/nolint"
 )
 
+// Doc is the analyzer's documentation.
 const Doc = `enforce interface-driven design patterns
 
 This analyzer ensures:
@@ -26,6 +27,7 @@ This analyzer ensures:
 
 Interface-driven design enables testability and loose coupling.`
 
+// Analyzer reports code that depends on concrete types where interfaces are expected.
 var Analyzer = &analysis.Analyzer{
 	Name:     "interfaceconsistency",
 	Doc:      Doc,
@@ -53,9 +55,9 @@ var shouldDefineInterfacePatterns = []string{
 	"store",
 }
 
-func run(pass *analysis.Pass) (interface{}, error) {
+func run(pass *analysis.Pass) (any, error) {
 	reporter := nolint.NewReporter(pass)
-	inspect := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
+	insp := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
 
 	// Track interfaces and their implementations
 	interfaces := make(map[string]*ast.TypeSpec)
@@ -67,7 +69,7 @@ func run(pass *analysis.Pass) (interface{}, error) {
 	}
 
 	// First pass: collect all interfaces and structs
-	inspect.Preorder(nodeFilter, func(n ast.Node) {
+	insp.Preorder(nodeFilter, func(n ast.Node) {
 		ts, ok := n.(*ast.TypeSpec)
 		if !ok {
 			return
@@ -82,7 +84,7 @@ func run(pass *analysis.Pass) (interface{}, error) {
 	})
 
 	// Second pass: analyze usage
-	inspect.Preorder(nodeFilter, func(n ast.Node) {
+	insp.Preorder(nodeFilter, func(n ast.Node) {
 		switch node := n.(type) {
 		case *ast.TypeSpec:
 			if st, ok := node.Type.(*ast.StructType); ok {
@@ -120,26 +122,42 @@ func checkStructFieldsUseInterfaces(reporter *nolint.Reporter, pass *analysis.Pa
 		}
 
 		for _, name := range field.Names {
-			fieldName := name.Name
-
-			// Check if this field looks like a dependency
-			for _, pattern := range shouldBeInterfacePatterns {
-				if strings.Contains(fieldName, pattern) || strings.HasSuffix(fieldName, pattern) {
-					// Check if the type is already an interface
-					if !isInterfaceType(pass, field.Type) {
-						// Only report for pointer types to concrete structs
-						if star, ok := field.Type.(*ast.StarExpr); ok {
-							if _, ok := star.X.(*ast.Ident); ok {
-								reporter.Reportf(field.Pos(),
-									"field %q in struct %q looks like a dependency; consider using an interface type instead of concrete type for better testability",
-									fieldName, ts.Name.Name)
-							}
-						}
-					}
-				}
-			}
+			checkDependencyField(reporter, pass, ts, field, name.Name)
 		}
 	}
+}
+
+// checkDependencyField reports a field named like a dependency that holds a concrete pointer type
+func checkDependencyField(reporter *nolint.Reporter, pass *analysis.Pass, ts *ast.TypeSpec, field *ast.Field, fieldName string) {
+	// Check if this field looks like a dependency
+	for _, pattern := range shouldBeInterfacePatterns {
+		if !strings.Contains(fieldName, pattern) && !strings.HasSuffix(fieldName, pattern) {
+			continue
+		}
+
+		if isConcretePointerType(pass, field.Type) {
+			reporter.Reportf(field.Pos(),
+				"field %q in struct %q looks like a dependency; consider using an interface type instead of concrete type for better testability",
+				fieldName, ts.Name.Name)
+		}
+	}
+}
+
+// isConcretePointerType checks if an AST expression is a pointer to a named non-interface type
+func isConcretePointerType(pass *analysis.Pass, expr ast.Expr) bool {
+	// Check if the type is already an interface
+	if isInterfaceType(pass, expr) {
+		return false
+	}
+
+	// Only report for pointer types to concrete structs
+	star, ok := expr.(*ast.StarExpr)
+	if !ok {
+		return false
+	}
+
+	_, ok = star.X.(*ast.Ident)
+	return ok
 }
 
 // hasJSONTag returns true if the field has a `json:` struct tag.
@@ -283,33 +301,38 @@ func checkMockImplementations(pass *analysis.Pass, interfaces map[string]*ast.Ty
 			continue
 		}
 
-		// For each exported interface, check if a mock exists
-		for name, iface := range interfaces {
-			if !ast.IsExported(name) {
-				continue
-			}
+		checkFileMockImplementations(f, filename, interfaces)
+	}
+}
 
-			// Check if this file contains the interface
-			if !fileContainsInterface(f, name) {
-				continue
-			}
+// checkFileMockImplementations checks the exported interfaces declared in one file for mocks
+func checkFileMockImplementations(f *ast.File, filename string, interfaces map[string]*ast.TypeSpec) {
+	// For each exported interface, check if a mock exists
+	for name, iface := range interfaces {
+		if !ast.IsExported(name) {
+			continue
+		}
 
-			// Expected mock file would be in mock/ subdirectory
-			dir := filepath.Dir(filename)
-			expectedMockFile := filepath.Join(dir, "mock", strings.ToLower(name)+".go")
+		// Check if this file contains the interface
+		if !fileContainsInterface(f, name) {
+			continue
+		}
 
-			// We can't check file existence in the analyzer, but we can suggest
-			// This is more of a documentation/reminder
-			_ = expectedMockFile
-			_ = iface
+		// Expected mock file would be in mock/ subdirectory
+		dir := filepath.Dir(filename)
+		expectedMockFile := filepath.Join(dir, "mock", strings.ToLower(name)+".go")
 
-			// Report if the interface is significant enough to warrant a mock
-			for _, pattern := range shouldDefineInterfacePatterns {
-				if strings.Contains(strings.ToLower(name), pattern) {
-					// This is just informational - we'd need actual file checking
-					// to know if mock exists
-					break
-				}
+		// We can't check file existence in the analyzer, but we can suggest
+		// This is more of a documentation/reminder
+		_ = expectedMockFile
+		_ = iface
+
+		// Report if the interface is significant enough to warrant a mock
+		for _, pattern := range shouldDefineInterfacePatterns {
+			if strings.Contains(strings.ToLower(name), pattern) {
+				// This is just informational - we'd need actual file checking
+				// to know if mock exists
+				break
 			}
 		}
 	}
@@ -324,14 +347,12 @@ func fileContainsInterface(f *ast.File, name string) bool {
 
 		for _, spec := range genDecl.Specs {
 			ts, ok := spec.(*ast.TypeSpec)
-			if !ok {
+			if !ok || ts.Name.Name != name {
 				continue
 			}
 
-			if ts.Name.Name == name {
-				if _, ok := ts.Type.(*ast.InterfaceType); ok {
-					return true
-				}
+			if _, ok := ts.Type.(*ast.InterfaceType); ok {
+				return true
 			}
 		}
 	}
@@ -351,13 +372,13 @@ func AnalyzeInterfaces(pass *analysis.Pass) *InterfaceInfo {
 		Implementations: make(map[string][]string),
 	}
 
-	inspect := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
+	insp := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
 
 	nodeFilter := []ast.Node{
 		(*ast.TypeSpec)(nil),
 	}
 
-	inspect.Preorder(nodeFilter, func(n ast.Node) {
+	insp.Preorder(nodeFilter, func(n ast.Node) {
 		ts, ok := n.(*ast.TypeSpec)
 		if !ok {
 			return

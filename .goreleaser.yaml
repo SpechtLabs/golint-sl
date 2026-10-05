@@ -1,13 +1,6 @@
-# GoReleaser configuration for golint-sl
-# Run: goreleaser release --clean
-
 version: 2
 
 project_name: golint-sl
-
-before:
-  hooks:
-    - go mod tidy
 
 builds:
   - id: golint-sl
@@ -22,29 +15,27 @@ builds:
     goarch:
       - amd64
       - arm64
+    mod_timestamp: "{{ .CommitTimestamp }}"
     ldflags:
       - -s -w
-      - -X github.com/spechtlabs/golint-sl/internal/version.Version={{.Version}}
-      - -X github.com/spechtlabs/golint-sl/internal/version.Commit={{.Commit}}
-      - -X github.com/spechtlabs/golint-sl/internal/version.Date={{.Date}}
+      - -X github.com/spechtlabs/golint-sl/internal/version.Version={{ .Version }}
+      - -X github.com/spechtlabs/golint-sl/internal/version.Commit={{ .Commit }}
+      - -X github.com/spechtlabs/golint-sl/internal/version.Date={{ .CommitDate }}
 
+# Every platform ships as both a tarball and a zip, as every release has.
 archives:
   - id: tar
+    ids:
+      - golint-sl
     formats:
       - tar.gz
-    name_template: >-
-      {{ .ProjectName }}_
-      {{- .Version }}_
-      {{- .Os }}_
-      {{- .Arch }}
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
   - id: zip
+    ids:
+      - golint-sl
     formats:
       - zip
-    name_template: >-
-      {{ .ProjectName }}_
-      {{- .Version }}_
-      {{- .Os }}_
-      {{- .Arch }}
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
 
 checksum:
   name_template: "checksums.txt"
@@ -52,117 +43,88 @@ checksum:
 snapshot:
   version_template: "{{ incpatch .Version }}-next"
 
-changelog:
-  sort: asc
-  filters:
-    exclude:
-      - "^docs:"
-      - "^test:"
-      - "^chore:"
-
-# Docker images (multi-platform)
-dockers:
-  - id: docker-amd64
-    use: buildx
-    dockerfile: Dockerfile.goreleaser
-    goos: linux
-    goarch: amd64
+# One multi-arch image per release on ghcr.io, tagged with the release, its
+# major version and latest. A snapshot builds and loads one image per platform
+# into the local Docker instead of pushing.
+dockers_v2:
+  - id: golint-sl
     ids:
       - golint-sl
-    image_templates:
-      - ghcr.io/spechtlabs/golint-sl:latest-amd64
-      - ghcr.io/spechtlabs/golint-sl:{{ .Tag }}-amd64
-      - ghcr.io/spechtlabs/golint-sl:v{{ .Major }}-amd64
-    build_flag_templates:
-      - "--label=org.opencontainers.image.created={{.Date}}"
-      - "--label=org.opencontainers.image.title={{.ProjectName}}"
-      - "--label=org.opencontainers.image.revision={{.FullCommit}}"
-      - "--label=org.opencontainers.image.version={{.Version}}"
-      - "--label=org.opencontainers.image.description=SpechtLabs best practices for writing good Go code"
-      - "--platform=linux/amd64"
-      - "--pull"
-
-  - id: docker-arm64
-    use: buildx
     dockerfile: Dockerfile.goreleaser
-    goos: linux
-    goarch: arm64
-    ids:
-      - golint-sl
-    image_templates:
-      - ghcr.io/spechtlabs/golint-sl:latest-arm64
-      - ghcr.io/spechtlabs/golint-sl:{{ .Tag }}-arm64
-      - ghcr.io/spechtlabs/golint-sl:v{{ .Major }}-arm64
-    build_flag_templates:
-      - "--label=org.opencontainers.image.created={{.Date}}"
-      - "--label=org.opencontainers.image.title={{.ProjectName}}"
-      - "--label=org.opencontainers.image.revision={{.FullCommit}}"
-      - "--label=org.opencontainers.image.version={{.Version}}"
-      - "--label=org.opencontainers.image.description=SpechtLabs best practices for writing good Go code"
-      - "--platform=linux/arm64"
-      - "--pull"
+    images:
+      - ghcr.io/spechtlabs/golint-sl
+    tags:
+      - "{{ .Tag }}"
+      - "v{{ .Major }}"
+      - latest
+    platforms:
+      - linux/amd64
+      - linux/arm64
+    labels:
+      org.opencontainers.image.created: "{{ .Date }}"
+      org.opencontainers.image.title: "{{ .ProjectName }}"
+      org.opencontainers.image.revision: "{{ .FullCommit }}"
+      org.opencontainers.image.version: "{{ .Version }}"
+      org.opencontainers.image.source: "https://github.com/SpechtLabs/golint-sl"
+      org.opencontainers.image.description: "SpechtLabs best practices for writing good Go code"
 
-docker_manifests:
-  - name_template: ghcr.io/spechtlabs/golint-sl:latest
-    image_templates:
-      - ghcr.io/spechtlabs/golint-sl:latest-amd64
-      - ghcr.io/spechtlabs/golint-sl:latest-arm64
-    skip_push: auto
-
-  - name_template: ghcr.io/spechtlabs/golint-sl:{{ .Tag }}
-    image_templates:
-      - ghcr.io/spechtlabs/golint-sl:{{ .Tag }}-amd64
-      - ghcr.io/spechtlabs/golint-sl:{{ .Tag }}-arm64
-    skip_push: auto
-
-  - name_template: ghcr.io/spechtlabs/golint-sl:v{{ .Major }}
-    image_templates:
-      - ghcr.io/spechtlabs/golint-sl:v{{ .Major }}-amd64
-      - ghcr.io/spechtlabs/golint-sl:v{{ .Major }}-arm64
-    skip_push: auto
-
-# Sign docker images with cosign (keyless)
-docker_signs:
-  - id: docker-sign
-    artifacts: manifests
-    args:
-      - "sign"
-      - --oidc-issuer=https://token.actions.githubusercontent.com
-      - "${artifact}"
-      - --yes
-
-# Sign binaries with cosign
-signs:
-  - cmd: cosign
-    signature: "${artifact}.sig"
-    certificate: "${artifact}.pem"
-    args:
-      - sign-blob
-      - --yes
-      - --oidc-issuer=https://token.actions.githubusercontent.com
-      - "--output-certificate=${certificate}"
-      - "--output-signature=${signature}"
-      - "${artifact}"
-    artifacts: binary
-
+# Publish to SpechtLabs/homebrew-tap using HOMEBREW_TAP_GITHUB_TOKEN, a
+# repository or organization Actions secret with Contents: read and write
+# access to the tap. The default GITHUB_TOKEN only has access to this repo.
 homebrew_casks:
   - name: golint-sl
+    # The cask installs from the tarballs.
     ids:
-      - golint-sl
+      - tar
     repository:
       owner: SpechtLabs
       name: homebrew-tap
       branch: main
       token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
     directory: Casks
-    homepage: "https://github.com/SpechtLabs/golint-sl"
+    homepage: "https://golint.specht-labs.de"
     description: "SpechtLabs Go linter collection for production code patterns."
+    skip_upload: auto
     commit_author:
       name: goreleaser-bot
       email: bot@specht-labs.de
+    # golint-sl is not Apple-notarized. Remove quarantine from the installed
+    # binary so Gatekeeper allows it to run, as with the other CLIs in the tap.
     hooks:
       post:
         install: |
           if OS.mac?
             system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/golint-sl"]
           end
+
+# release-please writes the changelog and creates the GitHub release; GoReleaser
+# only attaches the artifacts to it.
+changelog:
+  disable: true
+
+# A keyless cosign signature over checksums.txt, as a Sigstore bundle, covers
+# every archive through its checksum. `artifacts: binary` would sign nothing:
+# it only matches binaries released on their own, and ours ship in archives.
+signs:
+  - cmd: cosign
+    signature: "${artifact}.sigstore.json"
+    args:
+      - sign-blob
+      - "--bundle=${signature}"
+      - "${artifact}"
+      - --yes
+    artifacts: checksum
+
+# Keyless cosign signatures for the images, by digest.
+docker_signs:
+  - cmd: cosign
+    args:
+      - sign
+      - "${artifact}@${digest}"
+      - --yes
+
+release:
+  github:
+    owner: spechtlabs
+    name: golint-sl
+  mode: keep-existing

@@ -20,6 +20,7 @@ import (
 	"github.com/spechtlabs/golint-sl/internal/nolint"
 )
 
+// Doc is the contextlogger analyzer's documentation.
 const Doc = `enforce context-based logging patterns
 
 This analyzer ensures:
@@ -44,6 +45,7 @@ Example:
         log.Info("handling request")  // Loses context
     }`
 
+// Analyzer enforces context-based logging patterns.
 var Analyzer = &analysis.Analyzer{
 	Name:     "contextlogger",
 	Doc:      Doc,
@@ -72,15 +74,15 @@ var GlobalLoggerPatterns = []string{
 	"logrus.WithFields",
 }
 
-func run(pass *analysis.Pass) (interface{}, error) {
+func run(pass *analysis.Pass) (any, error) {
 	reporter := nolint.NewReporter(pass)
-	inspect := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
+	insp := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
 
 	nodeFilter := []ast.Node{
 		(*ast.FuncDecl)(nil),
 	}
 
-	inspect.Preorder(nodeFilter, func(n ast.Node) {
+	insp.Preorder(nodeFilter, func(n ast.Node) {
 		fn, ok := n.(*ast.FuncDecl)
 		if !ok {
 			return
@@ -165,30 +167,28 @@ func checkGlobalLoggerUsage(reporter *nolint.Reporter, fn *ast.FuncDecl) {
 
 // checkLoggerParameter detects logger passed as parameter (anti-pattern)
 func checkLoggerParameter(reporter *nolint.Reporter, fn *ast.FuncDecl) {
-	if fn.Type.Params == nil {
+	// Only a logger passed alongside a context is flagged (the logger should
+	// come from the context)
+	if fn.Type.Params == nil || !hasContextParameter(fn) {
 		return
+	}
+
+	// Check for common logger types passed as parameter
+	loggerPatterns := []string{
+		"*zap.Logger",
+		"*zap.SugaredLogger",
+		"*logrus.Logger",
+		"*logrus.Entry",
+		"*slog.Logger",
+		"*otelzap.Logger",
 	}
 
 	for _, param := range fn.Type.Params.List {
 		paramType := types.ExprString(param.Type)
-
-		// Check for common logger types passed as parameter
-		loggerPatterns := []string{
-			"*zap.Logger",
-			"*zap.SugaredLogger",
-			"*logrus.Logger",
-			"*logrus.Entry",
-			"*slog.Logger",
-			"*otelzap.Logger",
-		}
-
 		for _, pattern := range loggerPatterns {
 			if strings.Contains(paramType, pattern) {
-				// Check if context is also a parameter (which means logger should come from context)
-				if hasContextParameter(fn) {
-					reporter.Reportf(param.Pos(),
-						"logger passed as parameter alongside context; consider using log.FromContext(ctx) pattern instead")
-				}
+				reporter.Reportf(param.Pos(),
+					"logger passed as parameter alongside context; consider using log.FromContext(ctx) pattern instead")
 			}
 		}
 	}
@@ -219,14 +219,14 @@ type ContextLoggerInfo struct {
 // AnalyzeContextLogger returns information about context logger pattern usage
 func AnalyzeContextLogger(pass *analysis.Pass) *ContextLoggerInfo {
 	info := &ContextLoggerInfo{}
-	inspect := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
+	insp := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
 
 	nodeFilter := []ast.Node{
 		(*ast.FuncDecl)(nil),
 		(*ast.CallExpr)(nil),
 	}
 
-	inspect.Preorder(nodeFilter, func(n ast.Node) {
+	insp.Preorder(nodeFilter, func(n ast.Node) {
 		switch node := n.(type) {
 		case *ast.FuncDecl:
 			if node.Name != nil {

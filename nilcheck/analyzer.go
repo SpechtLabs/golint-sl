@@ -17,6 +17,7 @@ import (
 	"github.com/spechtlabs/golint-sl/internal/nolint"
 )
 
+// Doc is the nilcheck analyzer's documentation.
 const Doc = `enforce nil checks on pointer parameters before use
 
 This analyzer detects:
@@ -36,6 +37,7 @@ Every pointer parameter should be validated at the start of a function:
 
 This prevents nil pointer panics and provides better error messages.`
 
+// Analyzer reports pointer parameters used without a nil check.
 var Analyzer = &analysis.Analyzer{
 	Name:     "nilcheck",
 	Doc:      Doc,
@@ -142,15 +144,15 @@ var skipFilePatterns = []string{
 	"mocks/",
 }
 
-func run(pass *analysis.Pass) (interface{}, error) {
+func run(pass *analysis.Pass) (any, error) {
 	reporter := nolint.NewReporter(pass)
-	inspect := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
+	insp := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
 
 	nodeFilter := []ast.Node{
 		(*ast.FuncDecl)(nil),
 	}
 
-	inspect.Preorder(nodeFilter, func(n ast.Node) {
+	insp.Preorder(nodeFilter, func(n ast.Node) {
 		fn, ok := n.(*ast.FuncDecl)
 		if !ok || fn.Body == nil {
 			return
@@ -196,13 +198,10 @@ func checkFunction(reporter *nolint.Reporter, pass *analysis.Pass, fn *ast.FuncD
 	ast.Inspect(fn.Body, func(n ast.Node) bool {
 		// Skip the nil check conditions themselves
 		if ifStmt, ok := n.(*ast.IfStmt); ok {
-			checkedParam := extractNilCheck(ifStmt.Cond)
-			if checkedParam != "" {
-				// Skip checking inside the nil-check's then block if it's an early return
-				if isEarlyReturnBlock(ifStmt.Body) {
-					// After this if block, the param is effectively checked
-					checkedParams[checkedParam] = true
-				}
+			// Skip checking inside the nil-check's then block if it's an early return
+			if checkedParam := extractNilCheck(ifStmt.Cond); checkedParam != "" && isEarlyReturnBlock(ifStmt.Body) {
+				// After this if block, the param is effectively checked
+				checkedParams[checkedParam] = true
 			}
 		}
 
@@ -210,36 +209,30 @@ func checkFunction(reporter *nolint.Reporter, pass *analysis.Pass, fn *ast.FuncD
 		switch node := n.(type) {
 		case *ast.SelectorExpr:
 			// x.Field - check if x is an unchecked pointer param
-			if ident, ok := node.X.(*ast.Ident); ok {
-				if ptrParams[ident.Name] && !checkedParams[ident.Name] {
-					reporter.Reportf(node.Pos(),
-						"pointer parameter %q used without nil check; add 'if %s == nil { return ... }' at function start",
-						ident.Name, ident.Name)
-					// Mark as reported to avoid duplicate reports
-					checkedParams[ident.Name] = true
-				}
+			if ident, ok := node.X.(*ast.Ident); ok && ptrParams[ident.Name] && !checkedParams[ident.Name] {
+				reporter.Reportf(node.Pos(),
+					"pointer parameter %q used without nil check; add 'if %s == nil { return ... }' at function start",
+					ident.Name, ident.Name)
+				// Mark as reported to avoid duplicate reports
+				checkedParams[ident.Name] = true
 			}
 
 		case *ast.StarExpr:
 			// *x - explicit dereference
-			if ident, ok := node.X.(*ast.Ident); ok {
-				if ptrParams[ident.Name] && !checkedParams[ident.Name] {
-					reporter.Reportf(node.Pos(),
-						"pointer parameter %q dereferenced without nil check; add 'if %s == nil { return ... }' at function start",
-						ident.Name, ident.Name)
-					checkedParams[ident.Name] = true
-				}
+			if ident, ok := node.X.(*ast.Ident); ok && ptrParams[ident.Name] && !checkedParams[ident.Name] {
+				reporter.Reportf(node.Pos(),
+					"pointer parameter %q dereferenced without nil check; add 'if %s == nil { return ... }' at function start",
+					ident.Name, ident.Name)
+				checkedParams[ident.Name] = true
 			}
 
 		case *ast.IndexExpr:
 			// x[i] - could be slice/map from pointer
-			if ident, ok := node.X.(*ast.Ident); ok {
-				if ptrParams[ident.Name] && !checkedParams[ident.Name] {
-					reporter.Reportf(node.Pos(),
-						"pointer parameter %q indexed without nil check",
-						ident.Name)
-					checkedParams[ident.Name] = true
-				}
+			if ident, ok := node.X.(*ast.Ident); ok && ptrParams[ident.Name] && !checkedParams[ident.Name] {
+				reporter.Reportf(node.Pos(),
+					"pointer parameter %q indexed without nil check",
+					ident.Name)
+				checkedParams[ident.Name] = true
 			}
 		}
 
@@ -273,71 +266,66 @@ func collectPointerParams(pass *analysis.Pass, fn *ast.FuncDecl) map[string]bool
 	}
 
 	for _, field := range fn.Type.Params.List {
-		// Get the type string for checking against trusted types
-		typeStr := types.ExprString(field.Type)
-
-		// Skip trusted pointer types (framework types that are never nil)
-		if isTrustedType(typeStr) {
+		// Skip trusted pointer types (framework types that are never nil),
+		// and parameters whose type is not a pointer
+		if isTrustedType(types.ExprString(field.Type)) || !isPointerParam(pass, field) {
 			continue
 		}
 
-		// Check if the parameter type is a pointer
-		isPtr := false
-
-		switch t := field.Type.(type) {
-		case *ast.StarExpr:
-			// *T - pointer type
-			// Check if it's a trusted type
-			fullType := "*" + types.ExprString(t.X)
-			if isTrustedType(fullType) {
+		for _, name := range field.Names {
+			// Skip trusted parameter names
+			if trustedParamNames[name.Name] {
 				continue
 			}
-			isPtr = true
-		case *ast.Ident:
-			// Could be an interface or type alias
-			// Check with type info if available
-			if obj := pass.TypesInfo.ObjectOf(t); obj != nil {
-				if _, ok := obj.Type().Underlying().(*types.Pointer); ok {
-					isPtr = true
-				}
-				// Also check for interfaces (can be nil)
-				// But skip common trusted interfaces
-				if _, ok := obj.Type().Underlying().(*types.Interface); ok {
-					// Skip error interface and context
-					if t.Name == "error" || t.Name == "Context" {
-						continue
-					}
-					isPtr = true
-				}
-			}
-		case *ast.InterfaceType:
-			// interface{} can be nil - but often used with type assertions
-			// Skip for now as it causes many false positives
-			continue
-		case *ast.SelectorExpr:
-			// pkg.Type - check if it's trusted
-			fullType := types.ExprString(t)
-			if isTrustedType(fullType) {
-				continue
-			}
-			// Also check with pointer prefix
-			if isTrustedType("*" + fullType) {
-				continue
-			}
-		}
-
-		if isPtr {
-			for _, name := range field.Names {
-				// Skip trusted parameter names
-				if trustedParamNames[name.Name] {
-					continue
-				}
-				params[name.Name] = true
-			}
+			params[name.Name] = true
 		}
 	}
 
 	return params
+}
+
+// isPointerParam reports whether the parameter's type is a pointer (or a
+// nilable interface) that is not trusted to be non-nil.
+func isPointerParam(pass *analysis.Pass, field *ast.Field) bool {
+	switch t := field.Type.(type) {
+	case *ast.StarExpr:
+		// *T - pointer type
+		// Check if it's a trusted type
+		return !isTrustedType("*" + types.ExprString(t.X))
+	case *ast.Ident:
+		// Could be an interface or type alias
+		// Check with type info if available
+		return isPointerIdent(pass, t)
+	case *ast.InterfaceType:
+		// interface{} can be nil - but often used with type assertions
+		// Skip for now as it causes many false positives
+		return false
+	}
+
+	// pkg.Type and everything else is not treated as a pointer
+	return false
+}
+
+// isPointerIdent reports whether a named parameter type is a pointer or a
+// nilable interface other than error and Context.
+func isPointerIdent(pass *analysis.Pass, t *ast.Ident) bool {
+	obj := pass.TypesInfo.ObjectOf(t)
+	if obj == nil {
+		return false
+	}
+
+	if _, ok := obj.Type().Underlying().(*types.Pointer); ok {
+		return true
+	}
+
+	// Also check for interfaces (can be nil)
+	// But skip common trusted interfaces
+	if _, ok := obj.Type().Underlying().(*types.Interface); ok {
+		// Skip error interface and context
+		return t.Name != "error" && t.Name != "Context"
+	}
+
+	return false
 }
 
 // extractNilCheck checks if a condition is a nil check and returns the variable name
@@ -355,17 +343,13 @@ func extractNilCheck(cond ast.Expr) string {
 	var varName string
 
 	// Check X == nil or X != nil
-	if ident, ok := binExpr.X.(*ast.Ident); ok {
-		if isNilIdent(binExpr.Y) {
-			varName = ident.Name
-		}
+	if ident, ok := binExpr.X.(*ast.Ident); ok && isNilIdent(binExpr.Y) {
+		varName = ident.Name
 	}
 
 	// Check nil == X or nil != X
-	if ident, ok := binExpr.Y.(*ast.Ident); ok {
-		if isNilIdent(binExpr.X) {
-			varName = ident.Name
-		}
+	if ident, ok := binExpr.Y.(*ast.Ident); ok && isNilIdent(binExpr.X) {
+		varName = ident.Name
 	}
 
 	return varName

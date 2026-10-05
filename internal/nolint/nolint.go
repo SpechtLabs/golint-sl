@@ -28,8 +28,8 @@ var nolintRegex = regexp.MustCompile(`^//\s*nolint:([a-zA-Z0-9_,-]+)`)
 
 // Directive represents a parsed nolint directive.
 type Directive struct {
-	Line      int      // Line number where the directive appears
 	Analyzers []string // List of analyzer names to suppress (empty means all)
+	Line      int      // Line number where the directive appears
 }
 
 // FileDirectives holds all nolint directives for a file, indexed by line number.
@@ -90,17 +90,13 @@ func (fd *FileDirectives) IsSuppressed(line int, analyzerName string) bool {
 	}
 
 	// Check the current line (inline comment)
-	if d := fd.byLine[line]; d != nil {
-		if d.matches(analyzerName) {
-			return true
-		}
+	if d := fd.byLine[line]; d != nil && d.matches(analyzerName) {
+		return true
 	}
 
 	// Check the previous line (preceding comment)
-	if d := fd.byLine[line-1]; d != nil {
-		if d.matches(analyzerName) {
-			return true
-		}
+	if d := fd.byLine[line-1]; d != nil && d.matches(analyzerName) {
+		return true
 	}
 
 	return false
@@ -146,14 +142,12 @@ func NewReporter(pass *analysis.Pass) *Reporter {
 }
 
 // Reportf reports a diagnostic if it's not suppressed by a nolint directive.
-func (r *Reporter) Reportf(pos token.Pos, format string, args ...interface{}) {
+func (r *Reporter) Reportf(pos token.Pos, format string, args ...any) {
 	position := r.Pass.Fset.Position(pos)
 
 	// Check if this position is suppressed
-	if fd := r.Directives[position.Filename]; fd != nil {
-		if fd.IsSuppressed(position.Line, r.AnalyzerName) {
-			return
-		}
+	if fd := r.Directives[position.Filename]; fd != nil && fd.IsSuppressed(position.Line, r.AnalyzerName) {
+		return
 	}
 
 	r.Pass.Reportf(pos, format, args...)
@@ -164,10 +158,8 @@ func (r *Reporter) Report(d *analysis.Diagnostic) {
 	position := r.Pass.Fset.Position(d.Pos)
 
 	// Check if this position is suppressed
-	if fd := r.Directives[position.Filename]; fd != nil {
-		if fd.IsSuppressed(position.Line, r.AnalyzerName) {
-			return
-		}
+	if fd := r.Directives[position.Filename]; fd != nil && fd.IsSuppressed(position.Line, r.AnalyzerName) {
+		return
 	}
 
 	r.Pass.Report(*d)

@@ -15,6 +15,7 @@ import (
 	"github.com/spechtlabs/golint-sl/internal/nolint"
 )
 
+// Doc is the analyzer's documentation.
 const Doc = `enforce use of sentinel errors over inline errors.New()
 
 Sentinel errors are package-level error variables that can be:
@@ -62,6 +63,7 @@ Exceptions:
 - One-off errors in main() or tests
 - Errors with dynamic context (use fmt.Errorf with %w instead)`
 
+// Analyzer reports inline errors.New calls that should be package-level sentinel errors.
 var Analyzer = &analysis.Analyzer{
 	Name:     "sentinelerrors",
 	Doc:      Doc,
@@ -69,9 +71,9 @@ var Analyzer = &analysis.Analyzer{
 	Run:      run,
 }
 
-func run(pass *analysis.Pass) (interface{}, error) {
+func run(pass *analysis.Pass) (any, error) {
 	reporter := nolint.NewReporter(pass)
-	inspect := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
+	insp := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
 
 	// Track which functions are at package level (init, etc.)
 	var currentFunc *ast.FuncDecl
@@ -83,7 +85,7 @@ func run(pass *analysis.Pass) (interface{}, error) {
 		(*ast.CallExpr)(nil),
 	}
 
-	inspect.Preorder(nodeFilter, func(n ast.Node) {
+	insp.Preorder(nodeFilter, func(n ast.Node) {
 		switch node := n.(type) {
 		case *ast.File:
 			filename := pass.Fset.Position(node.Pos()).Filename
@@ -123,42 +125,47 @@ func checkErrorsNew(reporter *nolint.Reporter, call *ast.CallExpr, currentFunc *
 
 	// Check for errors.New()
 	if pkgIdent.Name == "errors" && selector.Sel.Name == "New" {
-		// Check if this is at package level (var declaration) - that's fine
-		if isPackageLevelVar(call) {
-			return
-		}
-
-		// Check if the error message is dynamic (contains variables)
-		if len(call.Args) > 0 {
-			if hasVariableContent(call.Args[0]) {
-				reporter.Reportf(call.Pos(),
-					"errors.New() with dynamic content; use fmt.Errorf(\"message: %%w\", err) to wrap errors or define a sentinel error")
-				return
-			}
-		}
-
-		funcName := ""
-		if currentFunc != nil {
-			funcName = currentFunc.Name.Name
-		}
-
-		reporter.Reportf(call.Pos(),
-			"inline errors.New() in function %q; define a package-level sentinel error (var Err... = errors.New(...)) for better error handling with errors.Is()",
-			funcName)
+		checkInlineErrorsNew(reporter, call, currentFunc)
 	}
 
 	// Also check for fmt.Errorf without %w (not wrapping an error)
 	if pkgIdent.Name == "fmt" && selector.Sel.Name == "Errorf" {
-		if len(call.Args) > 0 {
-			if !containsWrapVerb(call.Args[0]) {
-				// This is fmt.Errorf without wrapping - similar to errors.New
-				// but often used for formatting. Only flag if it looks like a constant message
-				if isLiteralString(call.Args[0]) && len(call.Args) == 1 {
-					reporter.Reportf(call.Pos(),
-						"fmt.Errorf() without %%w verb and no formatting; use humane.New(message, advice...) or define a sentinel error")
-				}
-			}
-		}
+		checkUnwrappedErrorf(reporter, call)
+	}
+}
+
+// checkInlineErrorsNew reports an errors.New() call made inside a function body
+func checkInlineErrorsNew(reporter *nolint.Reporter, call *ast.CallExpr, currentFunc *ast.FuncDecl) {
+	// Check if this is at package level (var declaration) - that's fine
+	if isPackageLevelVar(call) {
+		return
+	}
+
+	// Check if the error message is dynamic (contains variables)
+	if len(call.Args) > 0 && hasVariableContent(call.Args[0]) {
+		reporter.Reportf(call.Pos(),
+			"errors.New() with dynamic content; use fmt.Errorf(\"message: %%w\", err) to wrap errors or define a sentinel error")
+		return
+	}
+
+	funcName := ""
+	if currentFunc != nil {
+		funcName = currentFunc.Name.Name
+	}
+
+	reporter.Reportf(call.Pos(),
+		"inline errors.New() in function %q; define a package-level sentinel error (var Err... = errors.New(...)) for better error handling with errors.Is()",
+		funcName)
+}
+
+// checkUnwrappedErrorf reports an fmt.Errorf() call with a constant message and no %w verb
+func checkUnwrappedErrorf(reporter *nolint.Reporter, call *ast.CallExpr) {
+	// This is fmt.Errorf without wrapping - similar to errors.New
+	// but often used for formatting. Only flag if it looks like a constant message
+	if len(call.Args) > 0 && !containsWrapVerb(call.Args[0]) &&
+		isLiteralString(call.Args[0]) && len(call.Args) == 1 {
+		reporter.Reportf(call.Pos(),
+			"fmt.Errorf() without %%w verb and no formatting; use humane.New(message, advice...) or define a sentinel error")
 	}
 }
 

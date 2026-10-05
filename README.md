@@ -239,6 +239,10 @@ Available hooks:
 
 These are the coding standards we use at SpechtLabs for all Go projects.
 
+## Contributing
+
+Every tool is pinned in `.mise.toml`. Run `mise run test` for the race-enabled test suite, `mise run lint` to build golint-sl from the working tree into golangci-lint and lint the repository with it, and `mise run check` for every gate CI runs. `mise run docs-dev` serves the documentation website locally.
+
 ## License
 
 Apache 2.0

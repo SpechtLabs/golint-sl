@@ -18,6 +18,7 @@ import (
 	"github.com/spechtlabs/golint-sl/internal/nolint"
 )
 
+// Doc is the analyzer's documentation.
 const Doc = `enforce Kubernetes reconciler best practices
 
 This analyzer ensures reconcilers:
@@ -29,6 +30,7 @@ This analyzer ensures reconcilers:
 
 These patterns ensure reliable, idempotent reconciliation.`
 
+// Analyzer reports Kubernetes reconcilers that violate reconciler best practices.
 var Analyzer = &analysis.Analyzer{
 	Name:     "reconciler",
 	Doc:      Doc,
@@ -44,15 +46,15 @@ type ReconcileFunc struct {
 	HasRequeue    bool
 }
 
-func run(pass *analysis.Pass) (interface{}, error) {
+func run(pass *analysis.Pass) (any, error) {
 	reporter := nolint.NewReporter(pass)
-	inspect := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
+	insp := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
 
 	nodeFilter := []ast.Node{
 		(*ast.FuncDecl)(nil),
 	}
 
-	inspect.Preorder(nodeFilter, func(n ast.Node) {
+	insp.Preorder(nodeFilter, func(n ast.Node) {
 		fn, ok := n.(*ast.FuncDecl)
 		if !ok {
 			return
@@ -287,11 +289,9 @@ func checkErrorHandling(reporter *nolint.Reporter, fn *ast.FuncDecl) {
 			return true
 		}
 
-		if sel.Sel.Name == "Get" {
-			// Check if it's a client call (has context as first arg)
-			if len(call.Args) >= 2 {
-				hasClientGet = true
-			}
+		// Check if it's a client call (has context as first arg)
+		if sel.Sel.Name == "Get" && len(call.Args) >= 2 {
+			hasClientGet = true
 		}
 
 		return true
@@ -343,10 +343,10 @@ func checkLoggingPatterns(reporter *nolint.Reporter, fn *ast.FuncDecl) {
 // ReconcilerInfo contains analysis results about a reconciler
 type ReconcilerInfo struct {
 	Name             string
+	ForbiddenCalls   []string
 	HasProperSig     bool
 	UsesRequeue      bool
 	HasNotFoundCheck bool
-	ForbiddenCalls   []string
 }
 
 // AnalyzeReconciler returns detailed information about a reconciler function
@@ -364,29 +364,13 @@ func AnalyzeReconciler(fn *ast.FuncDecl) *ReconcilerInfo {
 	if fn.Body != nil {
 		ast.Inspect(fn.Body, func(n ast.Node) bool {
 			// Check for RequeueAfter
-			if composite, ok := n.(*ast.CompositeLit); ok {
-				if sel, ok := composite.Type.(*ast.SelectorExpr); ok {
-					if sel.Sel.Name == "Result" {
-						for _, elt := range composite.Elts {
-							if kv, ok := elt.(*ast.KeyValueExpr); ok {
-								if ident, ok := kv.Key.(*ast.Ident); ok {
-									if ident.Name == "RequeueAfter" || ident.Name == "Requeue" {
-										info.UsesRequeue = true
-									}
-								}
-							}
-						}
-					}
-				}
+			if composite, ok := n.(*ast.CompositeLit); ok && setsRequeue(composite) {
+				info.UsesRequeue = true
 			}
 
 			// Check for IsNotFound
-			if call, ok := n.(*ast.CallExpr); ok {
-				if sel, ok := call.Fun.(*ast.SelectorExpr); ok {
-					if sel.Sel.Name == "IsNotFound" {
-						info.HasNotFoundCheck = true
-					}
-				}
+			if isNotFoundCall(n) {
+				info.HasNotFoundCheck = true
 			}
 
 			return true
@@ -394,4 +378,36 @@ func AnalyzeReconciler(fn *ast.FuncDecl) *ReconcilerInfo {
 	}
 
 	return info
+}
+
+// setsRequeue checks if a composite literal is a Result that sets Requeue or RequeueAfter
+func setsRequeue(composite *ast.CompositeLit) bool {
+	sel, ok := composite.Type.(*ast.SelectorExpr)
+	if !ok || sel.Sel.Name != "Result" {
+		return false
+	}
+
+	for _, elt := range composite.Elts {
+		kv, ok := elt.(*ast.KeyValueExpr)
+		if !ok {
+			continue
+		}
+
+		if ident, ok := kv.Key.(*ast.Ident); ok && (ident.Name == "RequeueAfter" || ident.Name == "Requeue") {
+			return true
+		}
+	}
+
+	return false
+}
+
+// isNotFoundCall checks if a node is a call to an IsNotFound function
+func isNotFoundCall(n ast.Node) bool {
+	call, ok := n.(*ast.CallExpr)
+	if !ok {
+		return false
+	}
+
+	sel, ok := call.Fun.(*ast.SelectorExpr)
+	return ok && sel.Sel.Name == "IsNotFound"
 }
