@@ -1,5 +1,7 @@
 package a
 
+import "net/http"
+
 // MyClient is a stub interface for testing.
 type MyClient interface {
 	Do()
@@ -82,8 +84,9 @@ type Repository struct{}
 
 func (r *Repository) Get() string { return "" }
 
-// Bad: an IRepository interface exists but the constructor returns *Repository.
-func NewRepository() *Repository { // want `constructor "NewRepository" returns concrete type; consider returning interface "IRepository"`
+// Good: constructors may return the concrete type even when an interface
+// for it exists ("accept interfaces, return structs").
+func NewRepository() *Repository {
 	return &Repository{}
 }
 
@@ -97,7 +100,7 @@ type Cache struct{}
 
 func (c *Cache) Lookup(key string) string { return key }
 
-// Good: the constructor returns the matching CacheInterface.
+// Good: returning the interface is not reported either.
 func NewCache() CacheInterface {
 	return &Cache{}
 }
@@ -147,4 +150,48 @@ type SuppressedWiring struct {
 // unexportedIface is not a candidate for a mock.
 type unexportedIface interface {
 	run()
+}
+
+// --- One report per field and per call ---
+
+// Bad: a name with two dependency words is still one dependency.
+type Wiring struct {
+	ServiceClient *ConcreteClient // want `field "ServiceClient" in struct "Wiring" looks like a dependency`
+}
+
+func (factory) NewStoreClient() *ConcreteClient { return &ConcreteClient{} }
+
+// Bad: reported once although the name has two dependency words.
+func wireStore(f factory) {
+	_ = f.NewStoreClient() // want `creating NewStoreClient inside function`
+}
+
+// --- Fields of types from other packages, and type parameters ---
+
+// Good: a pointer to another package's concrete type (*http.Client) is the
+// normal way to hold it; only the package's own types are reported.
+type Fetcher struct {
+	HTTPClient *http.Client
+}
+
+// Good: a type parameter is not a concrete type.
+type Pool[T any] struct {
+	Client *T
+}
+
+// --- The idiomatic constructor shape ---
+
+// Store is the interface consumers depend on.
+type Store interface {
+	Get()
+}
+
+type store struct{}
+
+func (store) Get() {}
+
+// Good: NewStore returns the concrete *store although the package declares
+// a Store interface.
+func NewStore() *store {
+	return &store{}
 }

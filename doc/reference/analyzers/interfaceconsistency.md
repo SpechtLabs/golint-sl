@@ -4,7 +4,7 @@ permalink: /reference/analyzers/interfaceconsistency
 createTime: 2025/01/16 10:00:00
 ---
 
-Ensures interface implementations are complete and consistent.
+Ensures a package's components depend on each other through interfaces and get their dependencies injected.
 
 ## Category
 
@@ -12,62 +12,63 @@ Testability
 
 ## What It Checks
 
-This analyzer detects incomplete or inconsistent interface implementations.
+This analyzer reports two things:
+
+1. **Concrete dependency fields** - a struct field whose name contains a dependency word (`Client`, `Service`, `Repository`, `Store`, `Provider`, `Handler`, `Resolver`, `Middleware`) and whose type is a pointer to a concrete type declared in the same package. Each field is reported once, however many of the words its name contains.
+2. **Dependencies created in place** - a call to a `New*` function whose name contains one of those words, made from a function that is not itself a constructor.
+
+It does not report:
+
+- Fields with a `json` tag; those are data (DTOs, CRDs, API types), not dependencies
+- Pointers to other packages' types, such as `*http.Client` or `*sql.DB`
+- Constructors (`New*` functions), whatever they return
+- Test files, `main` packages (the composition root) and `NewTest*` helpers
 
 ## Why It Matters
 
-Incomplete implementations cause runtime errors or unexpected behavior. Catching them at lint time prevents production issues.
+A component that holds its collaborators as concrete types, or builds them itself, can't be tested without them. Depending on interfaces and receiving the implementations from the caller lets tests substitute fakes.
+
+Constructors are a different matter: "accept interfaces, return structs" applies, so `NewStore` returning `*store` is fine even when the package declares a `Store` interface. See [returninterface](/reference/analyzers/returninterface).
 
 ## Examples
 
-### Bad: Incomplete Implementation
+### Bad: Concrete Dependency Field
 
 ```go
-type Storage interface {
-    Get(key string) (string, error)
-    Set(key string, value string) error
-    Delete(key string) error
-}
+type userRepository struct{ db *sql.DB }
 
-type MemoryStorage struct {
-    data map[string]string
+type UserService struct {
+    Repository *userRepository // reported
 }
-
-func (m *MemoryStorage) Get(key string) (string, error) {
-    return m.data[key], nil
-}
-
-func (m *MemoryStorage) Set(key string, value string) error {
-    m.data[key] = value
-    return nil
-}
-
-// Delete is missing!
 ```
 
-### Good: Complete Implementation
+### Good: Interface Field
 
 ```go
-type MemoryStorage struct {
-    data map[string]string
+type UserRepository interface {
+    Get(id string) (*User, error)
 }
 
-func (m *MemoryStorage) Get(key string) (string, error) {
-    return m.data[key], nil
+type UserService struct {
+    Repository UserRepository
 }
+```
 
-func (m *MemoryStorage) Set(key string, value string) error {
-    m.data[key] = value
-    return nil
+### Bad: Creating a Dependency in Place
+
+```go
+func (s *Server) routes() {
+    client := NewPaymentClient(s.cfg) // reported
+    s.mux.Handle("/pay", payHandler(client))
 }
+```
 
-func (m *MemoryStorage) Delete(key string) error {
-    delete(m.data, key)
-    return nil
+### Good: Injecting It
+
+```go
+func NewServer(cfg Config, payments PaymentClient) *Server {
+    return &Server{cfg: cfg, payments: payments}
 }
-
-// Compile-time verification
-var _ Storage = (*MemoryStorage)(nil)
 ```
 
 ## Configuration
