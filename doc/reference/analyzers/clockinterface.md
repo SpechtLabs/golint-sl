@@ -13,6 +13,21 @@ Testability
 ## What It Checks
 
 This analyzer detects direct calls to `time.Now()` that should use an injectable Clock interface.
+It also flags `time.After()`, `time.Sleep()`, `time.NewTicker()` and
+`time.NewTimer()`, however the `time` package is imported (aliased or dot
+imports included).
+
+Some code is exempt:
+
+- `package main` and external test packages (`package foo_test`), by package
+  name, and `_test.go` files
+- packages whose import path contains `/cmd/`, `/cli/`, `/ui/`, `/terminal/`,
+  `/spinner`, `/pretty` or `/format`
+- functions named `main`, `init`, `New`, `Format`, `Print`, `Printf`,
+  `Println` or `String`, or starting with one of those words followed by a new
+  camel-case word (`NewService`, `FormatAge`, but not `Newsletter` or
+  `initializeCache`)
+- functions with a parameter whose type mentions `Clock`
 
 ## Why It Matters
 

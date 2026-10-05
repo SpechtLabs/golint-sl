@@ -20,6 +20,9 @@ func TestClockInterfaceAnalyzer(t *testing.T) {
 		"tools/main",
 		"example.com/cmd/tool",
 		"example.com/ui/widgets",
+		"example.com/domain",
+		"example.com/main/store",
+		"example.com/app",
 	)
 }
 
@@ -46,7 +49,7 @@ func TestAnalyzeClockPattern(t *testing.T) {
 				HasClockInterface:    true,
 				HasRealClock:         true,
 				HasMockClock:         true,
-				DirectTimeNowCalls:   2,
+				DirectTimeNowCalls:   3,
 				DirectTimeAfterCalls: 1,
 			},
 		},
