@@ -16,6 +16,7 @@ import (
 	"github.com/spechtlabs/golint-sl/internal/nolint"
 )
 
+// Doc is the analyzer's documentation.
 const Doc = `enforce Go package naming conventions
 
 Package naming rules:
@@ -29,6 +30,7 @@ Package naming rules:
 
 Reference: https://go.dev/blog/package-names`
 
+// Analyzer reports package names that break Go naming conventions.
 var Analyzer = &analysis.Analyzer{
 	Name:     "pkgnaming",
 	Doc:      Doc,
@@ -49,9 +51,9 @@ var genericNames = map[string]bool{
 	"shared":  true,
 }
 
-func run(pass *analysis.Pass) (interface{}, error) {
+func run(pass *analysis.Pass) (any, error) {
 	reporter := nolint.NewReporter(pass)
-	inspect := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
+	insp := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
 
 	pkgName := pass.Pkg.Name()
 
@@ -63,7 +65,7 @@ func run(pass *analysis.Pass) (interface{}, error) {
 		(*ast.FuncDecl)(nil),
 	}
 
-	inspect.Preorder(nodeFilter, func(n ast.Node) {
+	insp.Preorder(nodeFilter, func(n ast.Node) {
 		switch node := n.(type) {
 		case *ast.TypeSpec:
 			checkStutter(reporter, pkgName, node.Name.Name, node, "type")
@@ -80,23 +82,23 @@ func run(pass *analysis.Pass) (interface{}, error) {
 }
 
 func checkPackageName(reporter *nolint.Reporter, pass *analysis.Pass, name string) {
+	// Every finding is reported on the first file
+	if len(pass.Files) == 0 {
+		return
+	}
+
 	// Check for generic names
 	if genericNames[name] {
-		// Report on the first file
-		if len(pass.Files) > 0 {
-			reporter.Reportf(pass.Files[0].Package,
-				"package name %q is too generic; use a more descriptive name that indicates what the package does",
-				name)
-		}
+		reporter.Reportf(pass.Files[0].Package,
+			"package name %q is too generic; use a more descriptive name that indicates what the package does",
+			name)
 	}
 
 	// Check for underscores (but allow *_test packages - Go's external test convention)
 	if strings.Contains(name, "_") && !strings.HasSuffix(name, "_test") {
-		if len(pass.Files) > 0 {
-			reporter.Reportf(pass.Files[0].Package,
-				"package name %q contains underscore; use a single lowercase word",
-				name)
-		}
+		reporter.Reportf(pass.Files[0].Package,
+			"package name %q contains underscore; use a single lowercase word",
+			name)
 	}
 
 	// Check for mixed case
@@ -108,32 +110,30 @@ func checkPackageName(reporter *nolint.Reporter, pass *analysis.Pass, name strin
 		}
 	}
 	if hasUpper {
-		if len(pass.Files) > 0 {
-			reporter.Reportf(pass.Files[0].Package,
-				"package name %q contains uppercase letters; package names should be lowercase",
-				name)
-		}
+		reporter.Reportf(pass.Files[0].Package,
+			"package name %q contains uppercase letters; package names should be lowercase",
+			name)
 	}
 
 	// Check for plural (common mistake)
 	pluralSuffixes := []string{"ers", "ors", "ies", "es", "s"}
 	for _, suffix := range pluralSuffixes {
-		if strings.HasSuffix(name, suffix) && len(name) > len(suffix)+2 {
-			// Avoid false positives for words that naturally end in s
-			exceptions := map[string]bool{
-				"status": true, "class": true, "address": true,
-				"process": true, "access": true, "express": true,
-				"progress": true, "analysis": true, "basis": true,
-			}
-			if !exceptions[name] {
-				if len(pass.Files) > 0 {
-					reporter.Reportf(pass.Files[0].Package,
-						"package name %q appears to be plural; use singular form",
-						name)
-				}
-			}
-			break
+		if !strings.HasSuffix(name, suffix) || len(name) <= len(suffix)+2 {
+			continue
 		}
+
+		// Avoid false positives for words that naturally end in s
+		exceptions := map[string]bool{
+			"status": true, "class": true, "address": true,
+			"process": true, "access": true, "express": true,
+			"progress": true, "analysis": true, "basis": true,
+		}
+		if !exceptions[name] {
+			reporter.Reportf(pass.Files[0].Package,
+				"package name %q appears to be plural; use singular form",
+				name)
+		}
+		break
 	}
 }
 

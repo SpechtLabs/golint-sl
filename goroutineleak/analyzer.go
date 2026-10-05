@@ -20,6 +20,7 @@ import (
 	"github.com/spechtlabs/golint-sl/internal/nolint"
 )
 
+// Doc is the goroutineleak analyzer's documentation.
 const Doc = `detect goroutines that may leak
 
 This analyzer detects patterns that commonly cause goroutine leaks:
@@ -59,6 +60,7 @@ Bad patterns:
         }
     }()`
 
+// Analyzer reports goroutines that may leak.
 var Analyzer = &analysis.Analyzer{
 	Name:     "goroutineleak",
 	Doc:      Doc,
@@ -66,9 +68,9 @@ var Analyzer = &analysis.Analyzer{
 	Run:      run,
 }
 
-func run(pass *analysis.Pass) (interface{}, error) {
+func run(pass *analysis.Pass) (any, error) {
 	reporter := nolint.NewReporter(pass)
-	inspect := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
+	insp := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
 
 	nodeFilter := []ast.Node{
 		(*ast.GoStmt)(nil),
@@ -78,7 +80,7 @@ func run(pass *analysis.Pass) (interface{}, error) {
 	// Track if we're in a function that accepts context
 	var currentFuncHasContext bool
 
-	inspect.Preorder(nodeFilter, func(n ast.Node) {
+	insp.Preorder(nodeFilter, func(n ast.Node) {
 		switch node := n.(type) {
 		case *ast.FuncDecl:
 			currentFuncHasContext = hasContextParam(node)

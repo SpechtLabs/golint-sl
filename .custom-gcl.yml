@@ -1,24 +1,18 @@
 # golangci-lint v2 custom binary configuration
 #
-# This file configures the golangci-lint custom binary builder to include
-# golint-sl as a module plugin.
+# Builds ./custom-gcl: golangci-lint with golint-sl baked in as a module plugin.
+# `mise run lint` builds and runs it. Renovate keeps `version` current, in
+# lockstep with golangci-lint in .mise.toml.
 #
-# Usage:
-#   1. Run: golangci-lint custom
-#   2. This creates a ./custom-gcl binary with golint-sl baked in
-#   3. Use ./custom-gcl instead of golangci-lint
-#
-# For local development, the 'path' directive points to the current directory.
-# When using the published module, remove 'path' and use the version tag.
+# Unlike the projects that use golint-sl, this repository builds the plugin from
+# its own working tree (`path: .`) rather than a release, so golint-sl lints
+# itself with the analyzers as they are now, and a change that breaks the
+# plugin's registration fails the build. Projects using golint-sl pin a
+# release instead; see https://golint.specht-labs.de/guides/golangci-lint.html
 
-version: v2.8.0
+version: v2.14.0
 
 plugins:
-  # For local development
-  - module: 'github.com/spechtlabs/golint-sl'
-    import: 'github.com/spechtlabs/golint-sl'
+  - module: "github.com/spechtlabs/golint-sl"
+    import: "github.com/spechtlabs/golint-sl"
     path: .
-
-  # For using the published module (uncomment and remove the above):
-  # - module: 'github.com/spechtlabs/golint-sl'
-  #   version: v0.1.0

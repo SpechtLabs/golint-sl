@@ -13,6 +13,10 @@ import (
 	"github.com/spechtlabs/golint-sl/internal/nolint"
 )
 
+// httpPkgIdent is the name net/http is conventionally imported under.
+const httpPkgIdent = "http"
+
+// Doc is the httpclient analyzer's documentation.
 const Doc = `enforce http.Client best practices
 
 This analyzer detects:
@@ -24,6 +28,7 @@ This analyzer detects:
 HTTP clients without timeouts are a common source of goroutine leaks
 and hung services in production.`
 
+// Analyzer enforces http.Client best practices.
 var Analyzer = &analysis.Analyzer{
 	Name:     "httpclient",
 	Doc:      Doc,
@@ -31,9 +36,9 @@ var Analyzer = &analysis.Analyzer{
 	Run:      run,
 }
 
-func run(pass *analysis.Pass) (interface{}, error) {
+func run(pass *analysis.Pass) (any, error) {
 	reporter := nolint.NewReporter(pass)
-	inspect := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
+	insp := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
 
 	nodeFilter := []ast.Node{
 		(*ast.CompositeLit)(nil),
@@ -41,7 +46,7 @@ func run(pass *analysis.Pass) (interface{}, error) {
 		(*ast.SelectorExpr)(nil),
 	}
 
-	inspect.Preorder(nodeFilter, func(n ast.Node) {
+	insp.Preorder(nodeFilter, func(n ast.Node) {
 		switch node := n.(type) {
 		case *ast.CompositeLit:
 			checkClientLiteral(reporter, pass, node)
@@ -135,7 +140,7 @@ func isHTTPClientAST(expr ast.Expr) bool {
 		return false
 	}
 
-	return ident.Name == "http"
+	return ident.Name == httpPkgIdent
 }
 
 // checkDirectHTTPCalls detects http.Get, http.Post, etc.
@@ -150,7 +155,7 @@ func checkDirectHTTPCalls(reporter *nolint.Reporter, call *ast.CallExpr) {
 		return
 	}
 
-	if ident.Name != "http" {
+	if ident.Name != httpPkgIdent {
 		return
 	}
 
@@ -178,7 +183,7 @@ func checkDefaultClient(reporter *nolint.Reporter, sel *ast.SelectorExpr) {
 		return
 	}
 
-	if ident.Name == "http" {
+	if ident.Name == httpPkgIdent {
 		reporter.Reportf(sel.Pos(),
 			"http.DefaultClient has no timeout and is shared globally; create your own http.Client with Timeout")
 	}

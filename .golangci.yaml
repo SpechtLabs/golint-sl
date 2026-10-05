@@ -1,22 +1,25 @@
-# golangci-lint configuration for golint-sl
+# golangci-lint configuration for golint-sl.
+#
+# golint-sl runs as a module plugin baked into ./custom-gcl (see .custom-gcl.yml,
+# which builds it from this working tree). The prebuilt golangci-lint cannot
+# load the plugin, so run it with `mise run lint`, which builds custom-gcl and
+# runs it.
 # https://golangci-lint.run/usage/configuration/
 
 version: "2"
 
 run:
-  timeout: 5m
+  timeout: 10m
   tests: true
   modules-download-mode: readonly
 
-output:
-  formats:
-    colored-line-number: {}
-  print-issued-lines: true
-  print-linter-name: true
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
 
 linters:
   enable:
-    # Default linters (gosimple and stylecheck are now part of staticcheck)
+    # Default linters
     - errcheck
     - govet
     - ineffassign
@@ -24,77 +27,133 @@ linters:
     - unused
 
     # Additional recommended linters
-    - bodyclose
     - dogsled
-    - dupl
     - copyloopvar
     - gochecknoinits
-    # Disabled: goconst - inline strings are clearer in analyzer code
-    # Disabled: gocritic - too many style suggestions for AST code
-    # Disabled: gocyclo - AST traversal code can be complex
+    - goconst
+    - gocritic
+    - gocyclo
     - goprintffuncname
     - gosec
     - misspell
+    - modernize
     - nakedret
-    - noctx
     - nolintlint
-    # Disabled: prealloc - not critical for this codebase
-    # Disabled: revive - too many false positives for analyzer code
+    - prealloc
+    - revive
     - rowserrcheck
     - whitespace
+    - unconvert
+    - unparam
+
+    # golint-sl: production-ready Go patterns (error handling, observability, safety)
+    # https://golint.specht-labs.de/
+    - golint-sl
+
+  settings:
+    errcheck:
+      check-type-assertions: false
+      check-blank: false
+    govet:
+      enable-all: true
+    misspell:
+      locale: US
+    revive:
+      rules:
+        - name: comment-spacings
+        - name: import-shadowing
+    custom:
+      golint-sl:
+        type: module
+        description: SpechtLabs Go linter collection for production-ready code
+        original-url: github.com/spechtlabs/golint-sl
+
+  exclusions:
+    generated: lax
+    rules:
+      # Hold test files to a lighter bar than production code.
+      - linters:
+          - gosec
+          - goconst
+          - golint-sl
+        path: _test\.go
+
+      - linters:
+          - govet
+        text: "^fieldalignment:"
+        path: _test\.go
+
+      # Every analyzer works on what go/analysis hands it: the pass, and the
+      # syntax nodes, types and objects the parser and the type checker built.
+      # None of them is ever nil, and the helpers they pass them to share that
+      # contract; returning quietly on nil would hide a bug rather than
+      # prevent one.
+      - linters:
+          - golint-sl
+        text: "^nilcheck:"
+        path: (^|/)(analyzer\.go|internal/nolint/nolint\.go)$
+
+      # go/analysis fixes the signature of an analyzer's run function:
+      # func(*analysis.Pass) (any, error).
+      - linters:
+          - golint-sl
+        text: '^emptyinterface: function "run" returns'
+        path: (^|/)analyzer\.go$
+
+      # golangci-lint's module plugin API fixes these: New and BuildAnalyzers
+      # implement register.NewPlugin and register.LinterPlugin, which return
+      # plain errors.
+      - linters:
+          - golint-sl
+        text: "^(humaneerror|errorwrap):"
+        path: ^golangcilint\.go$
+
+      # golint-sl ships as a golangci-lint plugin, and humane-errors-go would
+      # bring zap and testify into every custom-gcl build's module graph for
+      # the standalone CLI's config errors. They wrap with fmt.Errorf instead.
+      - linters:
+          - golint-sl
+        text: "^humaneerror:"
+        path: ^internal/config/
+
+      # The package names and the exported types below are the public API that
+      # .custom-gcl.yml users and code importing the analyzers compile against;
+      # renaming them would break both.
+      - linters:
+          - golint-sl
+        text: '^pkgnaming: package name "(analyzers|hardcodedcreds|sentinelerrors|sideeffects|syncaccess|wideevents)" appears to be plural'
+      - linters:
+          - golint-sl
+        text: '^pkgnaming: type (contextlogger\.ContextLoggerInfo|contextpropagation\.ContextPropagationInfo|lifecycle\.LifecycleInfo|reconciler\.ReconcilerInfo) stutters'
+      - linters:
+          - golint-sl
+        text: '^mockverify: mock "MockInfo"'
+        path: ^mockverify/
+      - linters:
+          - golint-sl
+        text: '^optionspattern: function "AnalyzeOptionPatterns"'
+        path: ^optionspattern/
+
+      # todotracker matches TODO and FIXME anywhere in a comment, case
+      # insensitively, so the documentation of the todotracker analyzer itself,
+      # and comments naming context.TODO, read as unowned TODOs.
+      - linters:
+          - golint-sl
+        text: "^todotracker:"
+        path: ^(cmd/golint-sl/main\.go|contextpropagation/analyzer\.go|todotracker/analyzer\.go)$
+
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
 
 formatters:
   enable:
     - gofmt
     - goimports
-
-linters-settings:
-  errcheck:
-    check-type-assertions: false # Type assertions on pass.ResultOf are safe in analyzers
-    check-blank: false
-
-  govet:
-    enable-all: true
-    disable:
-      - fieldalignment # Too noisy for most projects
-
-  dupl:
-    threshold: 100
-
-  misspell:
-    locale: US
-
-  goimports:
-    local-prefixes: github.com/spechtlabs/golint-sl
-
-issues:
-  exclude-rules:
-    # Exclude some linters from running on test files
-    - path: _test\.go
-      linters:
-        - dupl
-        - gosec
-
-    # Exclude testdata directory
-    - path: testdata/
-      linters:
-        - dupl
-        - gosec
-        - errcheck
-        - govet
-        - staticcheck
-
-    # Allow init functions in analyzer packages (common pattern)
-    - path: analyzer\.go
-      linters:
-        - gochecknoinits
-
-    # Allow gosec G304 (file inclusion via variable) in config code
-    - path: internal/config/
-      linters:
-        - gosec
-      text: "G304"
-
-  max-issues-per-linter: 0
-  max-same-issues: 0
-  new: false
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$

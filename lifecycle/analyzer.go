@@ -22,6 +22,7 @@ import (
 	"github.com/spechtlabs/golint-sl/internal/nolint"
 )
 
+// Doc is the analyzer's documentation.
 const Doc = `enforce consistent component lifecycle patterns
 
 This analyzer ensures:
@@ -53,6 +54,7 @@ Example of good patterns:
         }
     }`
 
+// Analyzer reports components whose lifecycle methods are inconsistent.
 var Analyzer = &analysis.Analyzer{
 	Name:     "lifecycle",
 	Doc:      Doc,
@@ -60,15 +62,17 @@ var Analyzer = &analysis.Analyzer{
 	Run:      run,
 }
 
-// LifecycleMethods are methods that indicate a component has lifecycle
+// RunMethods are methods that indicate a component has lifecycle
 // Note: "Listen" is excluded because it typically follows the net.Listen() pattern
 // (takes an address string and returns quickly) rather than being a blocking run method
 var RunMethods = []string{"Run", "Start", "Serve"}
+
+// StopMethods are methods that shut a lifecycle component down
 var StopMethods = []string{"Close", "Stop", "Shutdown", "GracefulStop", "GracefulShutdown"}
 
-func run(pass *analysis.Pass) (interface{}, error) {
+func run(pass *analysis.Pass) (any, error) {
 	reporter := nolint.NewReporter(pass)
-	inspect := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
+	insp := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
 
 	// Track types and their methods
 	typeRunMethods := make(map[string]bool)   // type -> has run method
@@ -80,7 +84,7 @@ func run(pass *analysis.Pass) (interface{}, error) {
 	}
 
 	// First pass: collect method information
-	inspect.Preorder(nodeFilter, func(n ast.Node) {
+	insp.Preorder(nodeFilter, func(n ast.Node) {
 		fn, ok := n.(*ast.FuncDecl)
 		if !ok || fn.Recv == nil || len(fn.Recv.List) == 0 {
 			return
@@ -177,18 +181,8 @@ func checkRunRespectsContext(reporter *nolint.Reporter, fn *ast.FuncDecl) {
 		case *ast.SelectStmt:
 			// Check if select has ctx.Done() case
 			for _, comm := range node.Body.List {
-				if commClause, ok := comm.(*ast.CommClause); ok {
-					if commClause.Comm != nil {
-						// Check for <-ctx.Done() pattern
-						if exprStmt, ok := commClause.Comm.(*ast.ExprStmt); ok {
-							if unary, ok := exprStmt.X.(*ast.UnaryExpr); ok {
-								commStr := types.ExprString(unary.X)
-								if strings.Contains(commStr, "Done()") || strings.Contains(commStr, "ctx.Done") {
-									hasContextDoneCheck = true
-								}
-							}
-						}
-					}
+				if isContextDoneCase(comm) {
+					hasContextDoneCheck = true
 				}
 			}
 		}
@@ -205,6 +199,28 @@ func checkRunRespectsContext(reporter *nolint.Reporter, fn *ast.FuncDecl) {
 	}
 }
 
+// isContextDoneCase checks if a select clause receives from a Done() channel
+func isContextDoneCase(comm ast.Stmt) bool {
+	commClause, ok := comm.(*ast.CommClause)
+	if !ok || commClause.Comm == nil {
+		return false
+	}
+
+	// Check for <-ctx.Done() pattern
+	exprStmt, ok := commClause.Comm.(*ast.ExprStmt)
+	if !ok {
+		return false
+	}
+
+	unary, ok := exprStmt.X.(*ast.UnaryExpr)
+	if !ok {
+		return false
+	}
+
+	commStr := types.ExprString(unary.X)
+	return strings.Contains(commStr, "Done()") || strings.Contains(commStr, "ctx.Done")
+}
+
 // LifecycleInfo contains information about lifecycle patterns
 type LifecycleInfo struct {
 	TypesWithRun     []string
@@ -216,7 +232,7 @@ type LifecycleInfo struct {
 // AnalyzeLifecycle returns information about lifecycle patterns
 func AnalyzeLifecycle(pass *analysis.Pass) *LifecycleInfo {
 	info := &LifecycleInfo{}
-	inspect := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
+	insp := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
 
 	typeRunMethods := make(map[string]bool)
 	typeStopMethods := make(map[string]bool)
@@ -225,7 +241,7 @@ func AnalyzeLifecycle(pass *analysis.Pass) *LifecycleInfo {
 		(*ast.FuncDecl)(nil),
 	}
 
-	inspect.Preorder(nodeFilter, func(n ast.Node) {
+	insp.Preorder(nodeFilter, func(n ast.Node) {
 		fn, ok := n.(*ast.FuncDecl)
 		if !ok || fn.Recv == nil || len(fn.Recv.List) == 0 {
 			return

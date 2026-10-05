@@ -7,6 +7,7 @@ package sideeffects
 
 import (
 	"go/types"
+	"slices"
 	"strings"
 
 	"golang.org/x/tools/go/analysis"
@@ -16,6 +17,7 @@ import (
 	"github.com/spechtlabs/golint-sl/internal/nolint"
 )
 
+// Doc is the analyzer's documentation.
 const Doc = `detect unwanted side effects using SSA analysis
 
 This analyzer uses SSA (Static Single Assignment) form to track data flow and detect:
@@ -26,12 +28,16 @@ This analyzer uses SSA (Static Single Assignment) form to track data flow and de
 
 SSA provides a more accurate view of program flow than AST alone.`
 
+// Analyzer reports reconcilers, pure functions and handlers that perform unwanted side effects.
 var Analyzer = &analysis.Analyzer{
 	Name:     "sideeffects",
 	Doc:      Doc,
 	Requires: []*analysis.Analyzer{buildssa.Analyzer},
 	Run:      run,
 }
+
+// sqlPkgPath is the import path of the standard library SQL package.
+const sqlPkgPath = "database/sql"
 
 // Configuration for what constitutes forbidden side effects
 type Config struct {
@@ -53,7 +59,7 @@ var defaultConfig = Config{
 		"database/sql.(*DB).Query",
 	},
 	ForbiddenImportsInControllers: []string{
-		"database/sql",
+		sqlPkgPath,
 		"net/http",
 	},
 	PureFunctionPatterns: []string{
@@ -63,7 +69,7 @@ var defaultConfig = Config{
 	},
 }
 
-func run(pass *analysis.Pass) (interface{}, error) {
+func run(pass *analysis.Pass) (any, error) {
 	reporter := nolint.NewReporter(pass)
 	ssaInfo := pass.ResultOf[buildssa.Analyzer].(*buildssa.SSA)
 
@@ -133,29 +139,34 @@ func checkReconcilerSideEffects(reporter *nolint.Reporter, fn *ssa.Function) {
 				continue
 			}
 
-			calleeName := callee.String()
-
-			// Check against forbidden calls
-			for _, forbidden := range defaultConfig.ForbiddenCallsInReconcilers {
-				if strings.Contains(calleeName, forbidden) || matchesCallPattern(callee, forbidden) {
-					reporter.Reportf(call.Pos(),
-						"reconciler should not make direct %s call; use service layer abstraction",
-						forbidden)
-				}
-			}
-
-			// Check for HTTP client usage
-			if isHTTPClientCall(callee) {
-				reporter.Reportf(call.Pos(),
-					"reconciler should not make HTTP calls directly; inject an HTTP client interface")
-			}
-
-			// Check for database calls
-			if isDatabaseCall(callee) {
-				reporter.Reportf(call.Pos(),
-					"reconciler should not access database directly; use repository pattern")
-			}
+			checkReconcilerCall(reporter, call, callee)
 		}
+	}
+}
+
+// checkReconcilerCall reports a reconciler call to a forbidden, HTTP or database function
+func checkReconcilerCall(reporter *nolint.Reporter, call *ssa.Call, callee *ssa.Function) {
+	calleeName := callee.String()
+
+	// Check against forbidden calls
+	for _, forbidden := range defaultConfig.ForbiddenCallsInReconcilers {
+		if strings.Contains(calleeName, forbidden) || matchesCallPattern(callee, forbidden) {
+			reporter.Reportf(call.Pos(),
+				"reconciler should not make direct %s call; use service layer abstraction",
+				forbidden)
+		}
+	}
+
+	// Check for HTTP client usage
+	if isHTTPClientCall(callee) {
+		reporter.Reportf(call.Pos(),
+			"reconciler should not make HTTP calls directly; inject an HTTP client interface")
+	}
+
+	// Check for database calls
+	if isDatabaseCall(callee) {
+		reporter.Reportf(call.Pos(),
+			"reconciler should not access database directly; use repository pattern")
 	}
 }
 
@@ -219,9 +230,7 @@ func isHandlerFunc(fn *ssa.Function) bool {
 	}
 
 	// Check for gin.Context parameter
-	params := fn.Signature.Params()
-	for i := 0; i < params.Len(); i++ {
-		param := params.At(i)
+	for param := range fn.Signature.Params().Variables() {
 		paramType := param.Type().String()
 		if strings.Contains(paramType, "gin.Context") ||
 			strings.Contains(paramType, "http.ResponseWriter") {
@@ -287,7 +296,7 @@ func isDatabaseCall(fn *ssa.Function) bool {
 	}
 
 	pkgPath := fn.Pkg.Pkg.Path()
-	dbPackages := []string{"database/sql", "gorm.io", "go.mongodb.org"}
+	dbPackages := []string{sqlPkgPath, "gorm.io", "go.mongodb.org"}
 	for _, pkg := range dbPackages {
 		if strings.HasPrefix(pkgPath, pkg) {
 			return true
@@ -304,19 +313,19 @@ func isIOOperation(fn *ssa.Function) bool {
 	}
 
 	pkgPath := fn.Pkg.Pkg.Path()
-	ioPkgs := []string{"os", "io", "net", "bufio", "database/sql"}
+	ioPkgs := []string{"os", "io", "net", "bufio", sqlPkgPath}
 	for _, pkg := range ioPkgs {
-		if strings.HasPrefix(pkgPath, pkg) {
-			ioFuncs := []string{
-				"Read", "Write", "Open", "Create", "Remove", "Mkdir",
-				"Stat", "Chmod", "Chown", "Dial", "Listen", "Accept",
-			}
-			for _, f := range ioFuncs {
-				if strings.Contains(fn.Name(), f) {
-					return true
-				}
-			}
+		if !strings.HasPrefix(pkgPath, pkg) {
+			continue
 		}
+
+		ioFuncs := []string{
+			"Read", "Write", "Open", "Create", "Remove", "Mkdir",
+			"Stat", "Chmod", "Chown", "Dial", "Listen", "Accept",
+		}
+		return slices.ContainsFunc(ioFuncs, func(f string) bool {
+			return strings.Contains(fn.Name(), f)
+		})
 	}
 
 	return false
@@ -369,18 +378,7 @@ func CheckSensitiveDataLeak(reporter *nolint.Reporter, fn *ssa.Function, sensiti
 	for _, param := range params {
 		for _, sensitiveName := range sensitiveParamNames {
 			if strings.Contains(strings.ToLower(param.Name()), sensitiveName) {
-				// Track where this sensitive parameter flows
-				flow := TrackDataFlow(fn, param)
-				for _, instr := range flow {
-					if call, ok := instr.(*ssa.Call); ok {
-						callee := call.Call.StaticCallee()
-						if callee != nil && isLoggingCall(callee) {
-							reporter.Reportf(call.Pos(),
-								"sensitive parameter %q may be leaked through logging",
-								param.Name())
-						}
-					}
-				}
+				reportLoggedParam(reporter, fn, param)
 			}
 		}
 	}
@@ -419,14 +417,37 @@ func GetAllFunctions(ssaPkg *ssa.Package) []*ssa.Function {
 			funcs = append(funcs, fn)
 		}
 		if typ, ok := member.(*ssa.Type); ok {
-			// Get methods of the type
-			named := typ.Type().(*types.Named)
-			for i := 0; i < named.NumMethods(); i++ {
-				method := named.Method(i)
-				if ssaFn := ssaPkg.Prog.FuncValue(method); ssaFn != nil {
-					funcs = append(funcs, ssaFn)
-				}
-			}
+			funcs = appendMethodFuncs(funcs, ssaPkg.Prog, typ)
+		}
+	}
+
+	return funcs
+}
+
+// reportLoggedParam reports every logging call that a sensitive parameter flows into
+func reportLoggedParam(reporter *nolint.Reporter, fn *ssa.Function, param *ssa.Parameter) {
+	// Track where this sensitive parameter flows
+	for _, instr := range TrackDataFlow(fn, param) {
+		call, ok := instr.(*ssa.Call)
+		if !ok {
+			continue
+		}
+
+		callee := call.Call.StaticCallee()
+		if callee != nil && isLoggingCall(callee) {
+			reporter.Reportf(call.Pos(),
+				"sensitive parameter %q may be leaked through logging",
+				param.Name())
+		}
+	}
+}
+
+// appendMethodFuncs appends the SSA functions for the methods of a named type
+func appendMethodFuncs(funcs []*ssa.Function, prog *ssa.Program, typ *ssa.Type) []*ssa.Function {
+	named := typ.Type().(*types.Named)
+	for method := range named.Methods() {
+		if ssaFn := prog.FuncValue(method); ssaFn != nil {
+			funcs = append(funcs, ssaFn)
 		}
 	}
 

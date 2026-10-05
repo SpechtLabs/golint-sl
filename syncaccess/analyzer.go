@@ -15,6 +15,7 @@ import (
 	"github.com/spechtlabs/golint-sl/internal/nolint"
 )
 
+// Doc is the syncaccess analyzer's documentation.
 const Doc = `detect potential data races and synchronization issues
 
 This analyzer detects:
@@ -49,6 +50,7 @@ Use proper synchronization:
         count++  // Data race!
     }()`
 
+// Analyzer reports potential data races and synchronization issues.
 var Analyzer = &analysis.Analyzer{
 	Name:     "syncaccess",
 	Doc:      Doc,
@@ -56,9 +58,9 @@ var Analyzer = &analysis.Analyzer{
 	Run:      run,
 }
 
-func run(pass *analysis.Pass) (interface{}, error) {
+func run(pass *analysis.Pass) (any, error) {
 	reporter := nolint.NewReporter(pass)
-	inspect := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
+	insp := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
 
 	// Track struct types with mutex fields
 	structsWithMutex := findStructsWithMutex(pass)
@@ -70,7 +72,7 @@ func run(pass *analysis.Pass) (interface{}, error) {
 
 	var currentFunc *ast.FuncDecl
 
-	inspect.Preorder(nodeFilter, func(n ast.Node) {
+	insp.Preorder(nodeFilter, func(n ast.Node) {
 		switch node := n.(type) {
 		case *ast.FuncDecl:
 			currentFunc = node
@@ -144,12 +146,10 @@ func checkGoroutineCaptures(reporter *nolint.Reporter, goStmt *ast.GoStmt, curre
 		}
 
 		// Check for pointer/reference types that might be shared
-		if varInfo.isPointer || varInfo.isMap || varInfo.isSlice {
-			if !varInfo.isProtected {
-				reporter.Reportf(varInfo.pos,
-					"shared variable %q captured by goroutine without synchronization; consider using mutex or channels",
-					varName)
-			}
+		if (varInfo.isPointer || varInfo.isMap || varInfo.isSlice) && !varInfo.isProtected {
+			reporter.Reportf(varInfo.pos,
+				"shared variable %q captured by goroutine without synchronization; consider using mutex or channels",
+				varName)
 		}
 	}
 }
@@ -218,16 +218,14 @@ func inferVarType(expr ast.Expr, info varInfo) varInfo {
 			info.isPointer = true
 		}
 	case *ast.CallExpr:
-		if ident, ok := e.Fun.(*ast.Ident); ok {
-			if ident.Name == "make" && len(e.Args) > 0 {
-				switch e.Args[0].(type) {
-				case *ast.MapType:
-					info.isMap = true
-				case *ast.ArrayType:
-					info.isSlice = true
-				case *ast.ChanType:
-					info.isChannel = true // Channels are thread-safe
-				}
+		if ident, ok := e.Fun.(*ast.Ident); ok && ident.Name == "make" && len(e.Args) > 0 {
+			switch e.Args[0].(type) {
+			case *ast.MapType:
+				info.isMap = true
+			case *ast.ArrayType:
+				info.isSlice = true
+			case *ast.ChanType:
+				info.isChannel = true // Channels are thread-safe
 			}
 		}
 	case *ast.CompositeLit:
@@ -290,29 +288,23 @@ func isLoopVariable(fn *ast.FuncDecl, varName string, goStmt *ast.GoStmt) bool {
 		switch node := n.(type) {
 		case *ast.RangeStmt:
 			// Check if varName is the loop variable
-			if key, ok := node.Key.(*ast.Ident); ok && key.Name == varName {
-				// Check if goStmt is inside this loop
-				if containsNode(node.Body, goStmt) {
-					isLoopVar = true
-					return false
-				}
+			// and goStmt is inside this loop
+			if key, ok := node.Key.(*ast.Ident); ok && key.Name == varName && containsNode(node.Body, goStmt) {
+				isLoopVar = true
+				return false
 			}
-			if value, ok := node.Value.(*ast.Ident); ok && value.Name == varName {
-				if containsNode(node.Body, goStmt) {
-					isLoopVar = true
-					return false
-				}
+			if value, ok := node.Value.(*ast.Ident); ok && value.Name == varName && containsNode(node.Body, goStmt) {
+				isLoopVar = true
+				return false
 			}
 
 		case *ast.ForStmt:
 			// Check init statement for the variable
 			if assign, ok := node.Init.(*ast.AssignStmt); ok {
 				for _, lhs := range assign.Lhs {
-					if ident, ok := lhs.(*ast.Ident); ok && ident.Name == varName {
-						if containsNode(node.Body, goStmt) {
-							isLoopVar = true
-							return false
-						}
+					if ident, ok := lhs.(*ast.Ident); ok && ident.Name == varName && containsNode(node.Body, goStmt) {
+						isLoopVar = true
+						return false
 					}
 				}
 			}
@@ -367,28 +359,14 @@ func checkMutexUsage(reporter *nolint.Reporter, fn *ast.FuncDecl, structsWithMut
 		switch node := n.(type) {
 		case *ast.CallExpr:
 			// Check for Lock() call
-			if sel, ok := node.Fun.(*ast.SelectorExpr); ok {
-				if sel.Sel.Name == "Lock" || sel.Sel.Name == "RLock" {
-					hasLock = true
-				}
+			if sel, ok := node.Fun.(*ast.SelectorExpr); ok && (sel.Sel.Name == "Lock" || sel.Sel.Name == "RLock") {
+				hasLock = true
 			}
 
 		case *ast.SelectorExpr:
-			// Check for field access on receiver
-			if ident, ok := node.X.(*ast.Ident); ok {
-				// Check if it's the receiver
-				if fn.Recv != nil && len(fn.Recv.List) > 0 {
-					if len(fn.Recv.List[0].Names) > 0 {
-						recvName := fn.Recv.List[0].Names[0].Name
-						if ident.Name == recvName {
-							// Skip mutex field itself
-							if node.Sel.Name != "mu" && node.Sel.Name != "mutex" &&
-								!strings.Contains(strings.ToLower(node.Sel.Name), "mutex") {
-								hasFieldAccess = true
-							}
-						}
-					}
-				}
+			// Check for field access on receiver, skipping the mutex field itself
+			if ident, ok := node.X.(*ast.Ident); ok && isReceiver(fn, ident) && !isMutexFieldName(node.Sel.Name) {
+				hasFieldAccess = true
 			}
 		}
 
@@ -401,4 +379,16 @@ func checkMutexUsage(reporter *nolint.Reporter, fn *ast.FuncDecl, structsWithMut
 			"method %q on type with mutex accesses fields without Lock(); consider adding synchronization",
 			fn.Name.Name)
 	}
+}
+
+// isReceiver reports whether ident refers to the method's named receiver.
+func isReceiver(fn *ast.FuncDecl, ident *ast.Ident) bool {
+	return fn.Recv != nil && len(fn.Recv.List) > 0 &&
+		len(fn.Recv.List[0].Names) > 0 &&
+		ident.Name == fn.Recv.List[0].Names[0].Name
+}
+
+// isMutexFieldName reports whether a field name looks like a mutex field.
+func isMutexFieldName(name string) bool {
+	return name == "mu" || name == "mutex" || strings.Contains(strings.ToLower(name), "mutex")
 }

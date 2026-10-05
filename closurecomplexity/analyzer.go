@@ -15,6 +15,7 @@ import (
 	"github.com/spechtlabs/golint-sl/internal/nolint"
 )
 
+// Doc is the closurecomplexity analyzer's documentation.
 const Doc = `detect overly complex anonymous functions (closures)
 
 Closures should be kept simple. Complex business logic should be
@@ -50,6 +51,7 @@ This analyzer flags:
 Note: Test files are skipped, as table-driven tests commonly use
 longer closures for setup, fixtures, and mock configuration.`
 
+// Analyzer reports overly complex anonymous functions.
 var Analyzer = &analysis.Analyzer{
 	Name:     "closurecomplexity",
 	Doc:      Doc,
@@ -102,9 +104,9 @@ var exemptVisitorFuncs = map[string]bool{
 	"Range":   true,
 }
 
-func run(pass *analysis.Pass) (interface{}, error) {
+func run(pass *analysis.Pass) (any, error) {
 	reporter := nolint.NewReporter(pass)
-	inspect := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
+	insp := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
 
 	var currentFunc *ast.FuncDecl
 	var inTestFile bool
@@ -114,7 +116,6 @@ func run(pass *analysis.Pass) (interface{}, error) {
 
 	// First pass: find exempt closures
 	nodeFilter := []ast.Node{
-		(*ast.File)(nil),
 		(*ast.FuncDecl)(nil),
 		(*ast.DeferStmt)(nil),
 		(*ast.KeyValueExpr)(nil),
@@ -123,56 +124,12 @@ func run(pass *analysis.Pass) (interface{}, error) {
 		(*ast.CallExpr)(nil),
 	}
 
-	inspect.Preorder(nodeFilter, func(n ast.Node) {
-		switch node := n.(type) {
-		case *ast.File:
-			filename := pass.Fset.Position(node.Pos()).Filename
-			inTestFile = strings.HasSuffix(filename, "_test.go")
-
-		case *ast.FuncDecl:
-			currentFunc = node
-
-		case *ast.DeferStmt:
-			// Exempt deferred closures - they're commonly used for cleanup/telemetry
-			if funcLit, ok := node.Call.Fun.(*ast.FuncLit); ok {
-				exemptClosures[funcLit] = true
-			}
-
-		case *ast.GoStmt:
-			// Exempt goroutine closures - they need to capture context
-			if funcLit, ok := node.Call.Fun.(*ast.FuncLit); ok {
-				exemptClosures[funcLit] = true
-			}
-
-		case *ast.ReturnStmt:
-			// Exempt closures returned from functions (handler factory pattern)
-			for _, result := range node.Results {
-				if funcLit, ok := result.(*ast.FuncLit); ok {
-					exemptClosures[funcLit] = true
-				}
-			}
-
-		case *ast.CallExpr:
-			// Check for visitor pattern callbacks (e.g., ast.Inspect, f.VisitAll)
-			funcName := getCallFuncName(node)
-			if exemptVisitorFuncs[funcName] {
-				for _, arg := range node.Args {
-					if funcLit, ok := arg.(*ast.FuncLit); ok {
-						exemptClosures[funcLit] = true
-					}
-				}
-			}
-
-		case *ast.KeyValueExpr:
-			// Check for Cobra RunE/Run and HTTP handler fields
-			if ident, ok := node.Key.(*ast.Ident); ok {
-				if exemptCobraFields[ident.Name] || exemptHTTPFields[ident.Name] {
-					if funcLit, ok := node.Value.(*ast.FuncLit); ok {
-						exemptClosures[funcLit] = true
-					}
-				}
-			}
+	insp.Preorder(nodeFilter, func(n ast.Node) {
+		if fn, ok := n.(*ast.FuncDecl); ok {
+			currentFunc = fn
+			return
 		}
+		markExemptClosures(n, exemptClosures)
 	})
 
 	// Second pass: check non-exempt closures
@@ -182,7 +139,7 @@ func run(pass *analysis.Pass) (interface{}, error) {
 		(*ast.FuncLit)(nil),
 	}
 
-	inspect.Preorder(closureFilter, func(n ast.Node) {
+	insp.Preorder(closureFilter, func(n ast.Node) {
 		switch node := n.(type) {
 		case *ast.File:
 			filename := pass.Fset.Position(node.Pos()).Filename
@@ -203,6 +160,53 @@ func run(pass *analysis.Pass) (interface{}, error) {
 	})
 
 	return nil, nil
+}
+
+// markExemptClosures records the closures under n that are exempt from the
+// complexity checks because of where they appear.
+func markExemptClosures(n ast.Node, exempt map[*ast.FuncLit]bool) {
+	switch node := n.(type) {
+	case *ast.DeferStmt:
+		// Exempt deferred closures - they're commonly used for cleanup/telemetry
+		if funcLit, ok := node.Call.Fun.(*ast.FuncLit); ok {
+			exempt[funcLit] = true
+		}
+
+	case *ast.GoStmt:
+		// Exempt goroutine closures - they need to capture context
+		if funcLit, ok := node.Call.Fun.(*ast.FuncLit); ok {
+			exempt[funcLit] = true
+		}
+
+	case *ast.ReturnStmt:
+		// Exempt closures returned from functions (handler factory pattern)
+		for _, result := range node.Results {
+			if funcLit, ok := result.(*ast.FuncLit); ok {
+				exempt[funcLit] = true
+			}
+		}
+
+	case *ast.CallExpr:
+		// Check for visitor pattern callbacks (e.g., ast.Inspect, f.VisitAll)
+		if !exemptVisitorFuncs[getCallFuncName(node)] {
+			return
+		}
+		for _, arg := range node.Args {
+			if funcLit, ok := arg.(*ast.FuncLit); ok {
+				exempt[funcLit] = true
+			}
+		}
+
+	case *ast.KeyValueExpr:
+		// Check for Cobra RunE/Run and HTTP handler fields
+		ident, ok := node.Key.(*ast.Ident)
+		if !ok || (!exemptCobraFields[ident.Name] && !exemptHTTPFields[ident.Name]) {
+			return
+		}
+		if funcLit, ok := node.Value.(*ast.FuncLit); ok {
+			exempt[funcLit] = true
+		}
+	}
 }
 
 func checkClosure(reporter *nolint.Reporter, closure *ast.FuncLit, parentFunc *ast.FuncDecl) {
@@ -253,91 +257,68 @@ func countStatements(block *ast.BlockStmt) int {
 }
 
 func maxNestingDepth(node ast.Node, current int) int {
-	maxDepth := current
-
-	// Get the body to inspect based on node type
-	var body *ast.BlockStmt
-	switch n := node.(type) {
-	case *ast.BlockStmt:
-		body = n
-	case *ast.IfStmt:
-		body = n.Body
-	case *ast.ForStmt:
-		body = n.Body
-	case *ast.RangeStmt:
-		body = n.Body
-	case *ast.SwitchStmt:
-		body = n.Body
-	case *ast.TypeSwitchStmt:
-		body = n.Body
-	case *ast.SelectStmt:
-		body = n.Body
-	default:
-		return current
-	}
-
+	body := nestedBody(node)
 	if body == nil {
 		return current
 	}
 
+	maxDepth := current
 	for _, stmt := range body.List {
-		switch s := stmt.(type) {
-		case *ast.IfStmt:
-			depth := maxNestingDepth(s, current+1)
-			if depth > maxDepth {
-				maxDepth = depth
-			}
-			// Check else branch
-			if s.Else != nil {
-				if elseIf, ok := s.Else.(*ast.IfStmt); ok {
-					depth = maxNestingDepth(elseIf, current+1)
-				} else if elseBlock, ok := s.Else.(*ast.BlockStmt); ok {
-					depth = maxNestingDepth(elseBlock, current)
-				}
-				if depth > maxDepth {
-					maxDepth = depth
-				}
-			}
-
-		case *ast.ForStmt:
-			depth := maxNestingDepth(s, current+1)
-			if depth > maxDepth {
-				maxDepth = depth
-			}
-
-		case *ast.RangeStmt:
-			depth := maxNestingDepth(s, current+1)
-			if depth > maxDepth {
-				maxDepth = depth
-			}
-
-		case *ast.SwitchStmt:
-			depth := maxNestingDepth(s, current+1)
-			if depth > maxDepth {
-				maxDepth = depth
-			}
-
-		case *ast.TypeSwitchStmt:
-			depth := maxNestingDepth(s, current+1)
-			if depth > maxDepth {
-				maxDepth = depth
-			}
-
-		case *ast.SelectStmt:
-			depth := maxNestingDepth(s, current+1)
-			if depth > maxDepth {
-				maxDepth = depth
-			}
-
-		case *ast.BlockStmt:
-			depth := maxNestingDepth(s, current)
-			if depth > maxDepth {
-				maxDepth = depth
-			}
-		}
+		maxDepth = max(maxDepth, stmtNestingDepth(stmt, current))
 	}
 
 	return maxDepth
+}
+
+// nestedBody returns the block a nesting statement (or a bare block) opens,
+// or nil when node does not open one.
+func nestedBody(node ast.Node) *ast.BlockStmt {
+	switch n := node.(type) {
+	case *ast.BlockStmt:
+		return n
+	case *ast.IfStmt:
+		return n.Body
+	case *ast.ForStmt:
+		return n.Body
+	case *ast.RangeStmt:
+		return n.Body
+	case *ast.SwitchStmt:
+		return n.Body
+	case *ast.TypeSwitchStmt:
+		return n.Body
+	case *ast.SelectStmt:
+		return n.Body
+	default:
+		return nil
+	}
+}
+
+// stmtNestingDepth returns the nesting depth reached by stmt when it appears
+// in a block at depth current.
+func stmtNestingDepth(stmt ast.Stmt, current int) int {
+	switch s := stmt.(type) {
+	case *ast.IfStmt:
+		return max(maxNestingDepth(s, current+1), elseNestingDepth(s.Else, current))
+	case *ast.ForStmt, *ast.RangeStmt, *ast.SwitchStmt, *ast.TypeSwitchStmt, *ast.SelectStmt:
+		return maxNestingDepth(s, current+1)
+	case *ast.BlockStmt:
+		return maxNestingDepth(s, current)
+	default:
+		return current
+	}
+}
+
+// elseNestingDepth returns the nesting depth reached by an if statement's
+// else branch, which is an else-if or a plain block.
+func elseNestingDepth(els ast.Stmt, current int) int {
+	switch e := els.(type) {
+	case *ast.IfStmt:
+		return maxNestingDepth(e, current+1)
+	case *ast.BlockStmt:
+		return maxNestingDepth(e, current)
+	default:
+		return current
+	}
 }
 
 func countCapturedVars(closure *ast.FuncLit, parentFunc *ast.FuncDecl) int {

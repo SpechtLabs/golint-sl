@@ -15,6 +15,7 @@ import (
 	"github.com/spechtlabs/golint-sl/internal/nolint"
 )
 
+// Doc is the functionsize analyzer's documentation.
 const Doc = `enforce function size limits with refactoring advice
 
 Functions should be small and focused. This analyzer flags functions that are
@@ -32,6 +33,7 @@ Long functions often indicate:
 3. Repeated patterns (extract helper functions)
 4. Complex conditionals (use strategy pattern or lookup tables)`
 
+// Analyzer enforces function size limits and suggests refactorings.
 var Analyzer = &analysis.Analyzer{
 	Name:     "functionsize",
 	Doc:      Doc,
@@ -69,15 +71,15 @@ var exemptFuncNames = map[string]bool{
 	"Handler":   true, // HTTP handler functions
 }
 
-func run(pass *analysis.Pass) (interface{}, error) {
+func run(pass *analysis.Pass) (any, error) {
 	reporter := nolint.NewReporter(pass)
-	inspect := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
+	insp := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
 
 	nodeFilter := []ast.Node{
 		(*ast.FuncDecl)(nil),
 	}
 
-	inspect.Preorder(nodeFilter, func(n ast.Node) {
+	insp.Preorder(nodeFilter, func(n ast.Node) {
 		fn := n.(*ast.FuncDecl)
 		if fn.Body == nil {
 			return

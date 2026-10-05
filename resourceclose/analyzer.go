@@ -6,6 +6,7 @@ import (
 	"go/ast"
 	"go/token"
 	"go/types"
+	"slices"
 	"strings"
 
 	"golang.org/x/tools/go/analysis"
@@ -15,6 +16,7 @@ import (
 	"github.com/spechtlabs/golint-sl/internal/nolint"
 )
 
+// Doc is the analyzer's documentation.
 const Doc = `detect resources that are not properly closed
 
 This analyzer detects:
@@ -26,6 +28,7 @@ This analyzer detects:
 Unclosed resources cause memory leaks, file descriptor exhaustion,
 and connection pool starvation.`
 
+// Analyzer reports opened resources that are never closed.
 var Analyzer = &analysis.Analyzer{
 	Name:     "resourceclose",
 	Doc:      Doc,
@@ -42,60 +45,63 @@ type resourcePattern struct {
 	CreateFuncs []string // Functions that create this resource (if empty, match by type only)
 }
 
+// closeMethod is the name of the method that releases a resource.
+const closeMethod = "Close"
+
 var patterns = []resourcePattern{
 	{
 		AssignType:  "http.Response",
 		CloseField:  "Body",
-		CloseCall:   "Close",
+		CloseCall:   closeMethod,
 		Message:     "HTTP response body must be closed: defer resp.Body.Close()",
 		CreateFuncs: []string{"Do", "Get", "Post", "Head", "PostForm", "RoundTrip"},
 	},
 	{
 		AssignType:  "os.File",
 		CloseField:  "",
-		CloseCall:   "Close",
+		CloseCall:   closeMethod,
 		Message:     "file must be closed: defer f.Close()",
 		CreateFuncs: []string{"Open", "OpenFile", "Create", "CreateTemp"},
 	},
 	{
 		AssignType:  "sql.Rows",
 		CloseField:  "",
-		CloseCall:   "Close",
+		CloseCall:   closeMethod,
 		Message:     "database rows must be closed: defer rows.Close()",
 		CreateFuncs: []string{"Query", "QueryRow", "QueryContext", "QueryRowContext"},
 	},
 	{
 		AssignType:  "sql.Stmt",
 		CloseField:  "",
-		CloseCall:   "Close",
+		CloseCall:   closeMethod,
 		Message:     "prepared statement must be closed: defer stmt.Close()",
 		CreateFuncs: []string{"Prepare", "PrepareContext"},
 	},
 	{
 		AssignType:  "net.Conn",
 		CloseField:  "",
-		CloseCall:   "Close",
+		CloseCall:   closeMethod,
 		Message:     "connection must be closed: defer conn.Close()",
 		CreateFuncs: []string{"Dial", "DialContext", "DialTimeout", "DialTCP", "DialUDP", "DialIP", "DialUnix"},
 	},
 	{
 		AssignType:  "grpc.ClientConn",
 		CloseField:  "",
-		CloseCall:   "Close",
+		CloseCall:   closeMethod,
 		Message:     "gRPC connection must be closed: defer conn.Close()",
 		CreateFuncs: []string{"Dial", "DialContext", "NewClient"},
 	},
 }
 
-func run(pass *analysis.Pass) (interface{}, error) {
+func run(pass *analysis.Pass) (any, error) {
 	reporter := nolint.NewReporter(pass)
-	inspect := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
+	insp := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
 
 	nodeFilter := []ast.Node{
 		(*ast.FuncDecl)(nil),
 	}
 
-	inspect.Preorder(nodeFilter, func(n ast.Node) {
+	insp.Preorder(nodeFilter, func(n ast.Node) {
 		fn, ok := n.(*ast.FuncDecl)
 		if !ok || fn.Body == nil {
 			return
@@ -153,7 +159,7 @@ func checkFunction(reporter *nolint.Reporter, pass *analysis.Pass, fn *ast.FuncD
 			if node.Init != nil {
 				if assign, ok := node.Init.(*ast.AssignStmt); ok {
 					// Check if resource is created and closed within the same if statement
-					if isCreateAndClosePattern(pass, assign, node.Body) {
+					if isCreateAndClosePattern(assign, node.Body) {
 						// Mark this assignment to be skipped when ast.Inspect recurses into it
 						skipAssignments[assign] = true
 					} else {
@@ -265,7 +271,7 @@ func checkIfBlockCloses(ifStmt *ast.IfStmt, closedResources map[string]bool) {
 
 // isCreateAndClosePattern checks if a resource is created in an if init and immediately closed in the body
 // Pattern: if f, err := os.Create(...); err == nil { _ = f.Close() }
-func isCreateAndClosePattern(pass *analysis.Pass, assign *ast.AssignStmt, body *ast.BlockStmt) bool {
+func isCreateAndClosePattern(assign *ast.AssignStmt, body *ast.BlockStmt) bool {
 	// Get the variable names from the assignment
 	varNames := make(map[string]bool)
 	for _, lhs := range assign.Lhs {
@@ -363,7 +369,7 @@ func getCloseTarget(call *ast.CallExpr) string {
 		return ""
 	}
 
-	if sel.Sel.Name != "Close" {
+	if sel.Sel.Name != closeMethod {
 		return ""
 	}
 
@@ -371,9 +377,9 @@ func getCloseTarget(call *ast.CallExpr) string {
 }
 
 type resourceInfo struct {
-	pos        token.Pos
 	closeField string
 	message    string
+	pos        token.Pos
 }
 
 // isStdioAssignment checks if the RHS is os.Stdout, os.Stderr, or os.Stdin
@@ -436,24 +442,32 @@ func checkAssignment(pass *analysis.Pass, assign *ast.AssignStmt, resourceVars m
 		callFuncName := getCallFuncName(assign.Rhs)
 
 		// Check against patterns
-		typeStr := varType.String()
-		for _, pattern := range patterns {
-			if strings.Contains(typeStr, pattern.AssignType) {
-				// If pattern has CreateFuncs, only match if the call matches
-				if len(pattern.CreateFuncs) > 0 {
-					if !isCreateFunc(callFuncName, pattern.CreateFuncs) {
-						continue
-					}
-				}
-				resourceVars[ident.Name] = resourceInfo{
-					pos:        assign.Pos(),
-					closeField: pattern.CloseField,
-					message:    pattern.Message,
-				}
-				break
+		if pattern, ok := matchResourcePattern(varType.String(), callFuncName); ok {
+			resourceVars[ident.Name] = resourceInfo{
+				pos:        assign.Pos(),
+				closeField: pattern.CloseField,
+				message:    pattern.Message,
 			}
 		}
 	}
+}
+
+// matchResourcePattern returns the first resource pattern matching the variable type and create call
+func matchResourcePattern(typeStr, callFuncName string) (resourcePattern, bool) {
+	for _, pattern := range patterns {
+		if !strings.Contains(typeStr, pattern.AssignType) {
+			continue
+		}
+
+		// If pattern has CreateFuncs, only match if the call matches
+		if len(pattern.CreateFuncs) > 0 && !isCreateFunc(callFuncName, pattern.CreateFuncs) {
+			continue
+		}
+
+		return pattern, true
+	}
+
+	return resourcePattern{}, false
 }
 
 // getCallFuncName extracts the function name from a call expression in the RHS
@@ -480,12 +494,7 @@ func getCallFuncName(rhs []ast.Expr) string {
 
 // isCreateFunc checks if the function name matches any of the create functions
 func isCreateFunc(funcName string, createFuncs []string) bool {
-	for _, cf := range createFuncs {
-		if funcName == cf {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(createFuncs, funcName)
 }
 
 func checkDefer(deferStmt *ast.DeferStmt, closedResources map[string]bool) {
@@ -509,7 +518,7 @@ func checkCloseCall(call *ast.CallExpr, closedResources map[string]bool) {
 		return
 	}
 
-	if sel.Sel.Name != "Close" {
+	if sel.Sel.Name != closeMethod {
 		return
 	}
 

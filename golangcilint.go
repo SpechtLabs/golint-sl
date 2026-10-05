@@ -28,7 +28,7 @@ type Settings struct {
 	DisabledAnalyzers []string `json:"disabled-analyzers"`
 }
 
-type golintslPlugin struct {
+type plugin struct {
 	settings Settings
 }
 
@@ -36,13 +36,13 @@ type golintslPlugin struct {
 func New(conf any) (register.LinterPlugin, error) {
 	s, err := register.DecodeSettings[Settings](conf)
 	if err != nil {
-		return &golintslPlugin{}, nil // No settings provided, use defaults
+		return &plugin{}, nil // No settings provided, use defaults
 	}
-	return &golintslPlugin{settings: s}, nil
+	return &plugin{settings: s}, nil
 }
 
 // BuildAnalyzers returns the list of analyzers to run.
-func (p *golintslPlugin) BuildAnalyzers() ([]*analysis.Analyzer, error) {
+func (p *plugin) BuildAnalyzers() ([]*analysis.Analyzer, error) {
 	all := analyzers.All()
 	if len(p.settings.DisabledAnalyzers) == 0 {
 		return all, nil
@@ -65,6 +65,6 @@ func (p *golintslPlugin) BuildAnalyzers() ([]*analysis.Analyzer, error) {
 
 // GetLoadMode returns the load mode required by the analyzers.
 // Several golint-sl analyzers use pass.TypesInfo, so we need TypesInfo mode.
-func (p *golintslPlugin) GetLoadMode() string {
+func (p *plugin) GetLoadMode() string {
 	return register.LoadModeTypesInfo
 }

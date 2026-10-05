@@ -16,6 +16,7 @@ import (
 	"github.com/spechtlabs/golint-sl/internal/nolint"
 )
 
+// Doc is the emptyinterface analyzer's documentation.
 const Doc = `detect problematic uses of interface{}/any
 
 The empty interface bypasses Go's type system and should be used sparingly.
@@ -56,6 +57,7 @@ Example of wrapping unsafe code:
         return item, nil
     }`
 
+// Analyzer reports problematic uses of interface{} and any.
 var Analyzer = &analysis.Analyzer{
 	Name:     "emptyinterface",
 	Doc:      Doc,
@@ -63,9 +65,9 @@ var Analyzer = &analysis.Analyzer{
 	Run:      run,
 }
 
-func run(pass *analysis.Pass) (interface{}, error) {
+func run(pass *analysis.Pass) (any, error) {
 	reporter := nolint.NewReporter(pass)
-	inspect := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
+	insp := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
 
 	nodeFilter := []ast.Node{
 		(*ast.FuncDecl)(nil),
@@ -73,7 +75,7 @@ func run(pass *analysis.Pass) (interface{}, error) {
 		(*ast.TypeAssertExpr)(nil),
 	}
 
-	inspect.Preorder(nodeFilter, func(n ast.Node) {
+	insp.Preorder(nodeFilter, func(n ast.Node) {
 		switch node := n.(type) {
 		case *ast.FuncDecl:
 			checkFuncDecl(reporter, node)
@@ -93,27 +95,26 @@ func checkFuncDecl(reporter *nolint.Reporter, fn *ast.FuncDecl) {
 	// Check return types for interface{}
 	if fn.Type.Results != nil {
 		for _, field := range fn.Type.Results.List {
-			if isEmptyInterface(field.Type) {
-				// Allow if function name suggests it's a wrapper/adapter
-				if isAllowedFuncName(fn.Name.Name) {
-					continue
-				}
-				reporter.Reportf(field.Pos(),
-					"function %q returns interface{}/any; return concrete types instead (\"accept interfaces, return structs\")",
-					fn.Name.Name)
+			// Allow if function name suggests it's a wrapper/adapter
+			if !isEmptyInterface(field.Type) || isAllowedFuncName(fn.Name.Name) {
+				continue
 			}
+			reporter.Reportf(field.Pos(),
+				"function %q returns interface{}/any; return concrete types instead (\"accept interfaces, return structs\")",
+				fn.Name.Name)
 		}
 	}
 
 	// Check parameters - less strict, but flag map[string]interface{}
 	if fn.Type.Params != nil {
 		for _, field := range fn.Type.Params.List {
-			if isMapWithEmptyInterface(field.Type) {
-				for _, name := range field.Names {
-					reporter.Reportf(field.Pos(),
-						"parameter %q is map[string]interface{}; consider using a struct or typed map",
-						name.Name)
-				}
+			if !isMapWithEmptyInterface(field.Type) {
+				continue
+			}
+			for _, name := range field.Names {
+				reporter.Reportf(field.Pos(),
+					"parameter %q is map[string]interface{}; consider using a struct or typed map",
+					name.Name)
 			}
 		}
 	}
@@ -150,7 +151,7 @@ func checkTypeAssertion(_ *ast.TypeAssertExpr) {
 	// to determine if the ok pattern is used. This is left as a
 	// placeholder for future implementation.
 	//
-	// TODO: Implement proper type assertion checking by analyzing
+	// TODO(cedi): Implement proper type assertion checking by analyzing
 	// the parent assignment statement.
 }
 

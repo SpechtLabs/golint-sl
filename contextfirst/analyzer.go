@@ -16,6 +16,7 @@ import (
 	"github.com/spechtlabs/golint-sl/internal/nolint"
 )
 
+// Doc is the contextfirst analyzer's documentation.
 const Doc = `ensure context.Context is always the first parameter
 
 Go convention dictates that context.Context should be the first parameter
@@ -31,6 +32,7 @@ Bad:
 
 Reference: https://go.dev/blog/context#package-context`
 
+// Analyzer reports functions whose context.Context parameter is not first.
 var Analyzer = &analysis.Analyzer{
 	Name:     "contextfirst",
 	Doc:      Doc,
@@ -38,16 +40,16 @@ var Analyzer = &analysis.Analyzer{
 	Run:      run,
 }
 
-func run(pass *analysis.Pass) (interface{}, error) {
+func run(pass *analysis.Pass) (any, error) {
 	reporter := nolint.NewReporter(pass)
-	inspect := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
+	insp := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
 
 	nodeFilter := []ast.Node{
 		(*ast.FuncDecl)(nil),
 		(*ast.FuncLit)(nil),
 	}
 
-	inspect.Preorder(nodeFilter, func(n ast.Node) {
+	insp.Preorder(nodeFilter, func(n ast.Node) {
 		var params *ast.FieldList
 		var name string
 		var pos ast.Node

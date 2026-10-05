@@ -20,6 +20,7 @@ import (
 	"github.com/spechtlabs/golint-sl/internal/nolint"
 )
 
+// Doc is the analyzer's documentation.
 const Doc = `enforce compile-time interface verification for mocks
 
 This analyzer ensures that mock implementations include a compile-time
@@ -36,6 +37,7 @@ preventing issues like:
 The analyzer checks files in mock/ directories or files named *_mock.go
 and ensures they have the verification pattern.`
 
+// Analyzer reports mock types that lack a compile-time interface assertion.
 var Analyzer = &analysis.Analyzer{
 	Name:     "mockverify",
 	Doc:      Doc,
@@ -50,9 +52,9 @@ var MockNamePatterns = []string{
 	"Stub",
 }
 
-func run(pass *analysis.Pass) (interface{}, error) {
+func run(pass *analysis.Pass) (any, error) {
 	reporter := nolint.NewReporter(pass)
-	inspect := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
+	insp := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
 
 	// Track mock structs and their interface verifications
 	mockStructs := make(map[string]bool)       // mock name -> true
@@ -66,7 +68,7 @@ func run(pass *analysis.Pass) (interface{}, error) {
 	}
 
 	// Collect all mock structs and interface verifications
-	inspect.Preorder(nodeFilter, func(n ast.Node) {
+	insp.Preorder(nodeFilter, func(n ast.Node) {
 		switch node := n.(type) {
 		case *ast.File:
 			filename := pass.Fset.Position(node.Pos()).Filename
@@ -86,11 +88,9 @@ func run(pass *analysis.Pass) (interface{}, error) {
 
 		case *ast.TypeSpec:
 			// Check if this is a mock struct
-			if _, ok := node.Type.(*ast.StructType); ok {
-				if isMockName(node.Name.Name) {
-					mockStructs[node.Name.Name] = true
-					mockPositions[node.Name.Name] = node
-				}
+			if _, ok := node.Type.(*ast.StructType); ok && isMockName(node.Name.Name) {
+				mockStructs[node.Name.Name] = true
+				mockPositions[node.Name.Name] = node
 			}
 		}
 	})
@@ -153,27 +153,29 @@ func checkInterfaceVerification(vs *ast.ValueSpec, verifiedMocks map[string]bool
 	switch v := vs.Values[0].(type) {
 	case *ast.UnaryExpr:
 		// &Mock{}
-		if v.Op.String() == "&" {
-			if composite, ok := v.X.(*ast.CompositeLit); ok {
-				if ident, ok := composite.Type.(*ast.Ident); ok {
-					if isMockName(ident.Name) {
-						verifiedMocks[ident.Name] = true
-					}
-				}
-			}
+		if v.Op.String() != "&" {
+			return
+		}
+		if composite, ok := v.X.(*ast.CompositeLit); ok {
+			markVerifiedMock(composite.Type, verifiedMocks)
 		}
 
 	case *ast.CallExpr:
 		// (*Mock)(nil)
-		if paren, ok := v.Fun.(*ast.ParenExpr); ok {
-			if star, ok := paren.X.(*ast.StarExpr); ok {
-				if ident, ok := star.X.(*ast.Ident); ok {
-					if isMockName(ident.Name) {
-						verifiedMocks[ident.Name] = true
-					}
-				}
-			}
+		paren, ok := v.Fun.(*ast.ParenExpr)
+		if !ok {
+			return
 		}
+		if star, ok := paren.X.(*ast.StarExpr); ok {
+			markVerifiedMock(star.X, verifiedMocks)
+		}
+	}
+}
+
+// markVerifiedMock records typ as verified when it names a mock type
+func markVerifiedMock(typ ast.Expr, verifiedMocks map[string]bool) {
+	if ident, ok := typ.(*ast.Ident); ok && isMockName(ident.Name) {
+		verifiedMocks[ident.Name] = true
 	}
 }
 
@@ -187,7 +189,7 @@ type MockInfo struct {
 // AnalyzeMocks returns information about mock patterns in the package
 func AnalyzeMocks(pass *analysis.Pass) *MockInfo {
 	info := &MockInfo{}
-	inspect := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
+	insp := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
 
 	mockStructs := make(map[string]bool)
 	verifiedMocks := make(map[string]bool)
@@ -197,7 +199,7 @@ func AnalyzeMocks(pass *analysis.Pass) *MockInfo {
 		(*ast.TypeSpec)(nil),
 	}
 
-	inspect.Preorder(nodeFilter, func(n ast.Node) {
+	insp.Preorder(nodeFilter, func(n ast.Node) {
 		switch node := n.(type) {
 		case *ast.GenDecl:
 			for _, spec := range node.Specs {
@@ -207,11 +209,9 @@ func AnalyzeMocks(pass *analysis.Pass) *MockInfo {
 			}
 
 		case *ast.TypeSpec:
-			if _, ok := node.Type.(*ast.StructType); ok {
-				if isMockName(node.Name.Name) {
-					mockStructs[node.Name.Name] = true
-					info.Mocks = append(info.Mocks, node.Name.Name)
-				}
+			if _, ok := node.Type.(*ast.StructType); ok && isMockName(node.Name.Name) {
+				mockStructs[node.Name.Name] = true
+				info.Mocks = append(info.Mocks, node.Name.Name)
 			}
 		}
 	})

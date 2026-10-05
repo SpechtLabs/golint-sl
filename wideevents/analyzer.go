@@ -26,6 +26,7 @@ import (
 	"github.com/spechtlabs/golint-sl/internal/nolint"
 )
 
+// Doc is the wideevents analyzer's documentation.
 const Doc = `enforce wide event logging patterns instead of traditional logging
 
 This analyzer implements the "logging sucks" philosophy (https://loggingsucks.com/):
@@ -60,6 +61,7 @@ The goal: One log line per request per service with all necessary context,
 not scattered log statements throughout your code. When you have a context,
 add attributes to the span for better distributed tracing.`
 
+// Analyzer reports traditional logging that should be wide events.
 var Analyzer = &analysis.Analyzer{
 	Name:     "wideevents",
 	Doc:      Doc,
@@ -67,32 +69,44 @@ var Analyzer = &analysis.Analyzer{
 	Run:      run,
 }
 
+// Messages reported for banned logging calls.
+const (
+	logrusBannedMsg      = "logrus is banned; use zap with structured fields for wide events"
+	logrusDebugBannedMsg = "logrus is banned; use zap.Debug with structured fields instead"
+	stdlibLogBannedMsg   = "stdlib log is banned; use zap with structured fields for wide events"
+	stdlibLogFatalMsg    = "stdlib log is banned; use zap.Fatal with structured fields instead"
+	stdlibLogPanicMsg    = "stdlib log is banned; use zap.Panic with structured fields instead"
+)
+
+// zapErrorFunc is the zap field constructor for an error field.
+const zapErrorFunc = "Error"
+
 // Banned logging patterns - these should not be used
 var bannedLogPatterns = map[string]string{
 	// logrus - banned entirely
-	"logrus.Info":       "logrus is banned; use zap with structured fields for wide events",
-	"logrus.Infof":      "logrus is banned; use zap with structured fields for wide events",
-	"logrus.Warn":       "logrus is banned; use zap with structured fields for wide events",
-	"logrus.Warnf":      "logrus is banned; use zap with structured fields for wide events",
-	"logrus.Error":      "logrus is banned; use zap with structured fields for wide events",
-	"logrus.Errorf":     "logrus is banned; use zap with structured fields for wide events",
-	"logrus.Fatal":      "logrus is banned; use zap with structured fields for wide events",
-	"logrus.Fatalf":     "logrus is banned; use zap with structured fields for wide events",
-	"logrus.Debug":      "logrus is banned; use zap.Debug with structured fields instead",
-	"logrus.Debugf":     "logrus is banned; use zap.Debug with structured fields instead",
-	"logrus.WithField":  "logrus is banned; use zap with structured fields for wide events",
-	"logrus.WithFields": "logrus is banned; use zap with structured fields for wide events",
+	"logrus.Info":       logrusBannedMsg,
+	"logrus.Infof":      logrusBannedMsg,
+	"logrus.Warn":       logrusBannedMsg,
+	"logrus.Warnf":      logrusBannedMsg,
+	"logrus.Error":      logrusBannedMsg,
+	"logrus.Errorf":     logrusBannedMsg,
+	"logrus.Fatal":      logrusBannedMsg,
+	"logrus.Fatalf":     logrusBannedMsg,
+	"logrus.Debug":      logrusDebugBannedMsg,
+	"logrus.Debugf":     logrusDebugBannedMsg,
+	"logrus.WithField":  logrusBannedMsg,
+	"logrus.WithFields": logrusBannedMsg,
 
 	// stdlib log - banned entirely
-	"log.Print":   "stdlib log is banned; use zap with structured fields for wide events",
-	"log.Printf":  "stdlib log is banned; use zap with structured fields for wide events",
-	"log.Println": "stdlib log is banned; use zap with structured fields for wide events",
-	"log.Fatal":   "stdlib log is banned; use zap.Fatal with structured fields instead",
-	"log.Fatalf":  "stdlib log is banned; use zap.Fatal with structured fields instead",
-	"log.Fatalln": "stdlib log is banned; use zap.Fatal with structured fields instead",
-	"log.Panic":   "stdlib log is banned; use zap.Panic with structured fields instead",
-	"log.Panicf":  "stdlib log is banned; use zap.Panic with structured fields instead",
-	"log.Panicln": "stdlib log is banned; use zap.Panic with structured fields instead",
+	"log.Print":   stdlibLogBannedMsg,
+	"log.Printf":  stdlibLogBannedMsg,
+	"log.Println": stdlibLogBannedMsg,
+	"log.Fatal":   stdlibLogFatalMsg,
+	"log.Fatalf":  stdlibLogFatalMsg,
+	"log.Fatalln": stdlibLogFatalMsg,
+	"log.Panic":   stdlibLogPanicMsg,
+	"log.Panicf":  stdlibLogPanicMsg,
+	"log.Panicln": stdlibLogPanicMsg,
 
 	// fmt.Print - banned for logging (use for CLI output only)
 	"fmt.Print":   "fmt.Print is not for logging; use zap.Debug for dev output or emit a wide event",
@@ -171,16 +185,16 @@ func isCLIPackage(pass *analysis.Pass) bool {
 		strings.HasSuffix(pkgPath, "/cli")
 }
 
-func run(pass *analysis.Pass) (interface{}, error) {
+func run(pass *analysis.Pass) (any, error) {
 	reporter := nolint.NewReporter(pass)
-	inspect := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
+	insp := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
 	isCLI := isCLIPackage(pass)
 
 	nodeFilter := []ast.Node{
 		(*ast.FuncDecl)(nil),
 	}
 
-	inspect.Preorder(nodeFilter, func(n ast.Node) {
+	insp.Preorder(nodeFilter, func(n ast.Node) {
 		fn, ok := n.(*ast.FuncDecl)
 		if !ok || fn.Body == nil {
 			return
@@ -226,14 +240,7 @@ func checkFunction(reporter *nolint.Reporter, fn *ast.FuncDecl, isCLI bool) {
 		switch node := n.(type) {
 		case *ast.ForStmt, *ast.RangeStmt:
 			// Check for log calls inside this loop
-			ast.Inspect(node, func(inner ast.Node) bool {
-				if call, ok := inner.(*ast.CallExpr); ok {
-					if info := analyzeLogCall(call); info != nil {
-						logsInLoops = append(logsInLoops, call)
-					}
-				}
-				return true
-			})
+			logsInLoops = append(logsInLoops, logCallsInLoop(node)...)
 			return false // Don't recurse again
 
 		case *ast.CallExpr:
@@ -263,13 +270,7 @@ func checkFunction(reporter *nolint.Reporter, fn *ast.FuncDecl, isCLI bool) {
 	}
 
 	// Check for scattered log statements (multiple non-debug logs)
-	nonDebugLogs := 0
-	for _, info := range logCalls {
-		if !info.isDebug {
-			nonDebugLogs++
-		}
-	}
-
+	nonDebugLogs := countNonDebugLogs(logCalls)
 	if nonDebugLogs > 1 {
 		reporter.Reportf(fn.Pos(),
 			"function has %d log statements; consider emitting a single wide event at the end instead of scattered logs",
@@ -289,39 +290,52 @@ func checkFunction(reporter *nolint.Reporter, fn *ast.FuncDecl, isCLI bool) {
 		}
 	}
 
-	// If function has context and logs but doesn't use span attributes, suggest it
-	if hasContext && len(logCalls) > 0 && !hasSpanAttributes {
-		// Only report if there are non-debug logs
-		hasNonDebugLogs := false
-		for _, info := range logCalls {
-			if !info.isDebug {
-				hasNonDebugLogs = true
-				break
-			}
-		}
-
-		if hasNonDebugLogs {
-			if !hasSpanUsage {
-				reporter.Reportf(fn.Pos(),
-					"function has context.Context but doesn't use span attributes; "+
-						"use span := trace.SpanFromContext(ctx) and span.SetAttributes() for better observability")
-			} else if !hasSpanAttributes {
-				reporter.Reportf(fn.Pos(),
-					"function gets span from context but doesn't set attributes; "+
-						"add span.SetAttributes(attribute.String(\"key\", value)) for wide event data")
-			}
+	// If function has context and non-debug logs but doesn't use span
+	// attributes, suggest it
+	if hasContext && nonDebugLogs > 0 && !hasSpanAttributes {
+		if !hasSpanUsage {
+			reporter.Reportf(fn.Pos(),
+				"function has context.Context but doesn't use span attributes; "+
+					"use span := trace.SpanFromContext(ctx) and span.SetAttributes() for better observability")
+		} else {
+			reporter.Reportf(fn.Pos(),
+				"function gets span from context but doesn't set attributes; "+
+					"add span.SetAttributes(attribute.String(\"key\", value)) for wide event data")
 		}
 	}
+}
+
+// logCallsInLoop returns the log calls anywhere inside the loop.
+func logCallsInLoop(loop ast.Node) []*ast.CallExpr {
+	var calls []*ast.CallExpr
+	ast.Inspect(loop, func(inner ast.Node) bool {
+		if call, ok := inner.(*ast.CallExpr); ok && analyzeLogCall(call) != nil {
+			calls = append(calls, call)
+		}
+		return true
+	})
+	return calls
+}
+
+// countNonDebugLogs returns how many of the log calls are not debug logs.
+func countNonDebugLogs(logCalls []*logCallInfo) int {
+	nonDebugLogs := 0
+	for _, info := range logCalls {
+		if !info.isDebug {
+			nonDebugLogs++
+		}
+	}
+	return nonDebugLogs
 }
 
 type logCallInfo struct {
 	call                *ast.CallExpr
 	method              string
+	fieldNames          []string
 	isDebug             bool
 	isTraditionalLog    bool
 	hasStructuredFields bool
 	hasContextMethod    bool // true if method is *Context (e.g., ErrorContext, InfoContext)
-	fieldNames          []string
 }
 
 // contextAwareMethods are methods that accept context.Context as first argument
@@ -379,69 +393,12 @@ func analyzeLogCall(call *ast.CallExpr) *logCallInfo {
 		}
 	}
 
-	// Check if this is a zap logger call
-	isZapCall := false
-	isLoggerMethod := false
-	hasChainedFields := false
-
-	// Check for logger.Info(), logger.Error(), etc.
-	if traditionalLogMethods[method] || allowedDebugMethods[method] {
-		isLoggerMethod = true
-		// Check if receiver looks like a logger
-		switch x := sel.X.(type) {
-		case *ast.Ident:
-			name := strings.ToLower(x.Name)
-			// Exclude fmt package - fmt.Errorf is not logging
-			if name == "fmt" {
-				return nil
-			}
-			// Exclude testing.T methods - t.Errorf is not logging
-			if name == "t" || name == "b" {
-				return nil
-			}
-			// Exclude error variables - err.Error(), e.Error(), herr.Error(), lastCause.Error() is not logging
-			if name == "err" || name == "e" || strings.Contains(name, "err") || strings.Contains(name, "cause") {
-				return nil
-			}
-			// Exclude common test assertion variables
-			if name == "got" || name == "want" || name == "expected" || name == "actual" {
-				return nil
-			}
-			if strings.Contains(name, "log") || strings.Contains(name, "logger") || strings.Contains(name, "zap") || name == "l" {
-				isZapCall = true
-			}
-		case *ast.SelectorExpr:
-			// Could be pkg.Logger or obj.logger, or struct.err.Error()
-			if x.Sel != nil {
-				fieldName := strings.ToLower(x.Sel.Name)
-				// Exclude struct fields that are errors (e.g., event.err.Error())
-				if fieldName == "err" || strings.Contains(fieldName, "error") {
-					return nil
-				}
-				if strings.Contains(fieldName, "log") || strings.Contains(fieldName, "logger") || strings.Contains(fieldName, "zap") {
-					isZapCall = true
-				}
-			}
-		case *ast.CallExpr:
-			// Could be zap.L().Info(), otelzap.L().WithError(err).ErrorContext(), etc.
-			isZapCall = true
-			// Check for method chaining that adds fields
-			hasChainedFields = hasFieldChaining(x)
-		}
+	// Only logger.Info(), logger.Error(), etc. are log calls, and only when the
+	// receiver is not known to be something other than a logger
+	if !traditionalLogMethods[method] && !allowedDebugMethods[method] {
+		return nil
 	}
-
-	// Check for zap.L().Info() pattern
-	if callExpr, ok := sel.X.(*ast.CallExpr); ok {
-		if innerSel, ok := callExpr.Fun.(*ast.SelectorExpr); ok {
-			if ident, ok := innerSel.X.(*ast.Ident); ok {
-				if ident.Name == "zap" && (innerSel.Sel.Name == "L" || innerSel.Sel.Name == "S") {
-					isZapCall = true
-				}
-			}
-		}
-	}
-
-	if !isLoggerMethod {
+	if isExcludedLogReceiver(sel.X) {
 		return nil
 	}
 
@@ -462,18 +419,45 @@ func analyzeLogCall(call *ast.CallExpr) *logCallInfo {
 	// Check for structured fields in arguments
 	info.hasStructuredFields, info.fieldNames = hasStructuredFields(call)
 
+	// The receiver could be zap.L().Info(), otelzap.L().WithError(err).ErrorContext(), etc.
 	// If method chaining adds fields, mark as having structured fields
-	if hasChainedFields {
+	if x, ok := sel.X.(*ast.CallExpr); ok && hasFieldChaining(x) {
 		info.hasStructuredFields = true
 		info.fieldNames = append(info.fieldNames, "error") // WithError adds error field
 	}
 
-	// Only return if this looks like a logging call
-	if isZapCall || isLoggerMethod {
-		return info
-	}
+	return info
+}
 
-	return nil
+// isExcludedLogReceiver reports whether the receiver of a logger-named method
+// is known not to be a logger (fmt, testing.T, errors, test assertion values).
+func isExcludedLogReceiver(recv ast.Expr) bool {
+	switch x := recv.(type) {
+	case *ast.Ident:
+		return isExcludedReceiverName(strings.ToLower(x.Name))
+	case *ast.SelectorExpr:
+		// Could be pkg.Logger or obj.logger, or struct.err.Error()
+		if x.Sel == nil {
+			return false
+		}
+		// Exclude struct fields that are errors (e.g., event.err.Error())
+		fieldName := strings.ToLower(x.Sel.Name)
+		return fieldName == "err" || strings.Contains(fieldName, "error")
+	}
+	return false
+}
+
+// isExcludedReceiverName reports whether a lower-cased receiver identifier
+// names something other than a logger.
+func isExcludedReceiverName(name string) bool {
+	switch name {
+	case "fmt", // fmt package - fmt.Errorf is not logging
+		"t", "b", // testing.T methods - t.Errorf is not logging
+		"got", "want", "expected", "actual": // common test assertion variables
+		return true
+	}
+	// Exclude error variables - err.Error(), e.Error(), herr.Error(), lastCause.Error() is not logging
+	return name == "e" || strings.Contains(name, "err") || strings.Contains(name, "cause")
 }
 
 // hasFieldChaining checks if a call expression has method chaining that adds fields
@@ -503,28 +487,44 @@ func hasStructuredFields(call *ast.CallExpr) (bool, []string) {
 		}
 
 		// Check for zap.String(), zap.Int(), zap.Error(), etc.
-		if argCall, ok := arg.(*ast.CallExpr); ok {
-			if sel, ok := argCall.Fun.(*ast.SelectorExpr); ok {
-				if ident, ok := sel.X.(*ast.Ident); ok {
-					if ident.Name == "zap" {
-						// zap.Error() is a special case - the field name is "error"
-						if sel.Sel.Name == "Error" || sel.Sel.Name == "NamedError" {
-							fieldNames = append(fieldNames, "error")
-							continue
-						}
-						// Extract field name if possible
-						if len(argCall.Args) > 0 {
-							if lit, ok := argCall.Args[0].(*ast.BasicLit); ok {
-								fieldNames = append(fieldNames, strings.Trim(lit.Value, "\""))
-							}
-						}
-					}
-				}
-			}
+		if name, ok := zapFieldName(arg); ok {
+			fieldNames = append(fieldNames, name)
 		}
 	}
 
 	return len(fieldNames) > 0, fieldNames
+}
+
+// zapFieldName returns the field name of a zap field constructor call such as
+// zap.String("key", value), if it can be determined.
+func zapFieldName(arg ast.Expr) (string, bool) {
+	argCall, ok := arg.(*ast.CallExpr)
+	if !ok {
+		return "", false
+	}
+	sel, ok := argCall.Fun.(*ast.SelectorExpr)
+	if !ok {
+		return "", false
+	}
+	ident, ok := sel.X.(*ast.Ident)
+	if !ok || ident.Name != "zap" {
+		return "", false
+	}
+
+	// zap.Error() is a special case - the field name is "error"
+	if sel.Sel.Name == zapErrorFunc || sel.Sel.Name == "NamedError" {
+		return "error", true
+	}
+
+	// Extract field name if possible
+	if len(argCall.Args) == 0 {
+		return "", false
+	}
+	lit, ok := argCall.Args[0].(*ast.BasicLit)
+	if !ok {
+		return "", false
+	}
+	return strings.Trim(lit.Value, "\""), true
 }
 
 func checkBannedLogPatterns(reporter *nolint.Reporter, call *ast.CallExpr, isCLI bool) {
@@ -627,23 +627,18 @@ func isSpanFromContextCall(call *ast.CallExpr) bool {
 	methodName := sel.Sel.Name
 
 	// Check for trace.SpanFromContext, otel.SpanFromContext, etc.
-	if spanFromContextFuncs[methodName] {
-		// Check the package/receiver
-		switch x := sel.X.(type) {
-		case *ast.Ident:
-			name := strings.ToLower(x.Name)
-			if name == "trace" || name == "otel" || strings.Contains(name, "tracer") {
-				return true
-			}
-		case *ast.SelectorExpr:
-			// Could be oteltrace.SpanFromContext
-			if x.Sel != nil {
-				name := strings.ToLower(x.Sel.Name)
-				if strings.Contains(name, "trace") {
-					return true
-				}
-			}
-		}
+	if !spanFromContextFuncs[methodName] {
+		return false
+	}
+
+	// Check the package/receiver
+	switch x := sel.X.(type) {
+	case *ast.Ident:
+		name := strings.ToLower(x.Name)
+		return name == "trace" || name == "otel" || strings.Contains(name, "tracer")
+	case *ast.SelectorExpr:
+		// Could be oteltrace.SpanFromContext
+		return x.Sel != nil && strings.Contains(strings.ToLower(x.Sel.Name), "trace")
 	}
 
 	return false

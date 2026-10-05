@@ -14,6 +14,7 @@ import (
 	"github.com/spechtlabs/golint-sl/internal/nolint"
 )
 
+// Doc is the errorwrap analyzer's documentation.
 const Doc = `detect bare error returns without context
 
 This analyzer detects:
@@ -28,6 +29,7 @@ Errors should be wrapped with context to create a clear error chain:
 Prefer humane.Wrap() as it provides actionable advice to users.
 Bare error returns make debugging difficult because you lose the stack context.`
 
+// Analyzer reports error returns that lack wrapping context.
 var Analyzer = &analysis.Analyzer{
 	Name:     "errorwrap",
 	Doc:      Doc,
@@ -35,15 +37,18 @@ var Analyzer = &analysis.Analyzer{
 	Run:      run,
 }
 
-func run(pass *analysis.Pass) (interface{}, error) {
+// errVarName is the conventional name of an error variable.
+const errVarName = "err"
+
+func run(pass *analysis.Pass) (any, error) {
 	reporter := nolint.NewReporter(pass)
-	inspect := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
+	insp := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
 
 	nodeFilter := []ast.Node{
 		(*ast.FuncDecl)(nil),
 	}
 
-	inspect.Preorder(nodeFilter, func(n ast.Node) {
+	insp.Preorder(nodeFilter, func(n ast.Node) {
 		fn, ok := n.(*ast.FuncDecl)
 		if !ok || fn.Body == nil {
 			return
@@ -105,12 +110,12 @@ func returnsHumaneError(fn *ast.FuncDecl) bool {
 	}
 
 	for _, result := range fn.Type.Results.List {
-		if sel, ok := result.Type.(*ast.SelectorExpr); ok {
-			if ident, ok := sel.X.(*ast.Ident); ok {
-				if ident.Name == "humane" && sel.Sel.Name == "Error" {
-					return true
-				}
-			}
+		sel, ok := result.Type.(*ast.SelectorExpr)
+		if !ok {
+			continue
+		}
+		if ident, ok := sel.X.(*ast.Ident); ok && ident.Name == "humane" && sel.Sel.Name == "Error" {
+			return true
 		}
 	}
 
@@ -126,7 +131,7 @@ func checkErrorAssignment(assign *ast.AssignStmt, errorAssignments map[string]to
 		}
 
 		// Common error variable names
-		if ident.Name == "err" || strings.HasSuffix(ident.Name, "Err") || strings.HasSuffix(ident.Name, "Error") {
+		if ident.Name == errVarName || strings.HasSuffix(ident.Name, "Err") || strings.HasSuffix(ident.Name, "Error") {
 			errorAssignments[ident.Name] = assign.Pos()
 		}
 	}
@@ -136,42 +141,44 @@ func isErrorWrap(call *ast.CallExpr) bool {
 	// Check for common wrapping patterns
 	switch fn := call.Fun.(type) {
 	case *ast.SelectorExpr:
-		funcName := fn.Sel.Name
-
-		// fmt.Errorf with %w
-		if funcName == "Errorf" {
-			// Check if format string contains %w
-			if len(call.Args) > 0 {
-				if lit, ok := call.Args[0].(*ast.BasicLit); ok {
-					if strings.Contains(lit.Value, "%w") {
-						return true
-					}
-				}
-			}
-		}
-
-		// humane.Wrap, errors.Wrap, pkg/errors.Wrap
-		if funcName == "Wrap" || funcName == "Wrapf" || funcName == "WithMessage" {
-			return true
-		}
-
-		// humane.New creates a new error (not wrap, but acceptable)
-		if funcName == "New" {
-			if ident, ok := fn.X.(*ast.Ident); ok {
-				if ident.Name == "humane" {
-					return true
-				}
-			}
-		}
+		return isWrapSelectorCall(call, fn)
 
 	case *ast.Ident:
 		// errors.New is not wrapping but creating new error
-		if fn.Name == "Errorf" {
-			return true
-		}
+		return fn.Name == "Errorf"
 	}
 
 	return false
+}
+
+// isWrapSelectorCall reports whether a pkg.Func(...) call wraps or creates an
+// error with context.
+func isWrapSelectorCall(call *ast.CallExpr, fn *ast.SelectorExpr) bool {
+	switch fn.Sel.Name {
+	case "Errorf":
+		// fmt.Errorf with %w
+		return formatHasWrapVerb(call)
+
+	case "Wrap", "Wrapf", "WithMessage":
+		// humane.Wrap, errors.Wrap, pkg/errors.Wrap
+		return true
+
+	case "New":
+		// humane.New creates a new error (not wrap, but acceptable)
+		ident, ok := fn.X.(*ast.Ident)
+		return ok && ident.Name == "humane"
+	}
+
+	return false
+}
+
+// formatHasWrapVerb reports whether the call's format string contains %w.
+func formatHasWrapVerb(call *ast.CallExpr) bool {
+	if len(call.Args) == 0 {
+		return false
+	}
+	lit, ok := call.Args[0].(*ast.BasicLit)
+	return ok && strings.Contains(lit.Value, "%w")
 }
 
 func checkBareErrorReturn(reporter *nolint.Reporter, ret *ast.ReturnStmt, fn *ast.FuncDecl, errorAssignments map[string]token.Pos, errorWrapped map[string]bool) {
@@ -185,12 +192,10 @@ func checkBareErrorReturn(reporter *nolint.Reporter, ret *ast.ReturnStmt, fn *as
 			continue
 		}
 
-		// Check if this is an error variable
-		if _, isError := errorAssignments[ident.Name]; !isError {
-			// Also check for common error names not explicitly tracked
-			if ident.Name != "err" && !strings.HasSuffix(ident.Name, "Err") {
-				continue
-			}
+		// Check if this is an error variable, or a common error name not
+		// explicitly tracked
+		if _, isError := errorAssignments[ident.Name]; !isError && ident.Name != errVarName && !strings.HasSuffix(ident.Name, "Err") {
+			continue
 		}
 
 		// Skip if nil
@@ -241,5 +246,5 @@ func isErrorIdent(expr ast.Expr) bool {
 	if !ok {
 		return false
 	}
-	return ident.Name == "err" || strings.HasSuffix(ident.Name, "Err")
+	return ident.Name == errVarName || strings.HasSuffix(ident.Name, "Err")
 }

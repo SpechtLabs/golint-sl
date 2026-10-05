@@ -6,6 +6,7 @@ package nopanic
 
 import (
 	"go/ast"
+	"slices"
 	"strings"
 
 	"golang.org/x/tools/go/analysis"
@@ -15,6 +16,7 @@ import (
 	"github.com/spechtlabs/golint-sl/internal/nolint"
 )
 
+// Doc is the nopanic analyzer's documentation.
 const Doc = `ensure library code returns errors instead of panicking
 
 This analyzer detects:
@@ -43,6 +45,7 @@ Bad pattern:
         return &cfg
     }`
 
+// Analyzer reports panics in library code that should return errors.
 var Analyzer = &analysis.Analyzer{
 	Name:     "nopanic",
 	Doc:      Doc,
@@ -56,14 +59,14 @@ var allowedPanicFunctions = map[string]bool{
 	"TestMain": true,
 }
 
-func run(pass *analysis.Pass) (interface{}, error) {
+func run(pass *analysis.Pass) (any, error) {
 	// Skip main packages
 	if pass.Pkg.Name() == "main" {
 		return nil, nil
 	}
 
 	reporter := nolint.NewReporter(pass)
-	inspect := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
+	insp := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
 
 	var currentFunc string
 	var inTestFile bool
@@ -74,7 +77,7 @@ func run(pass *analysis.Pass) (interface{}, error) {
 		(*ast.CallExpr)(nil),
 	}
 
-	inspect.Preorder(nodeFilter, func(n ast.Node) {
+	insp.Preorder(nodeFilter, func(n ast.Node) {
 		switch node := n.(type) {
 		case *ast.File:
 			filename := pass.Fset.Position(node.Pos()).Filename
@@ -133,12 +136,10 @@ func checkPanicCall(reporter *nolint.Reporter, call *ast.CallExpr, _ string) {
 		"logrus.Panic", "logrus.Panicf", "logrus.Panicln",
 	}
 
-	for _, pattern := range fatalPatterns {
-		if funcName == pattern {
-			reporter.Reportf(call.Pos(),
-				"%s() in library code terminates the program; return an error instead", funcName)
-			return
-		}
+	if slices.Contains(fatalPatterns, funcName) {
+		reporter.Reportf(call.Pos(),
+			"%s() in library code terminates the program; return an error instead", funcName)
+		return
 	}
 
 	// Check for zap fatal

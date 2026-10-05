@@ -1,3 +1,6 @@
-FROM gcr.io/distroless/static-debian12:nonroot
-COPY golint-sl /usr/local/bin/golint-sl
+FROM gcr.io/distroless/static-debian13:nonroot
+# GoReleaser's dockers_v2 puts each platform's binary under its platform
+# (linux/amd64/golint-sl, linux/arm64/golint-sl) in the build context.
+ARG TARGETPLATFORM
+COPY $TARGETPLATFORM/golint-sl /usr/local/bin/golint-sl
 ENTRYPOINT ["/usr/local/bin/golint-sl"]

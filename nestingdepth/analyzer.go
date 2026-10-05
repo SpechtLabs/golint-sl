@@ -14,6 +14,7 @@ import (
 	"github.com/spechtlabs/golint-sl/internal/nolint"
 )
 
+// Doc is the analyzer's documentation.
 const Doc = `enforce shallow nesting depth and early returns
 
 This analyzer detects:
@@ -55,6 +56,7 @@ Bad pattern (deep nesting):
         }
     }`
 
+// Analyzer reports deeply nested code, long if-else chains and combinable nested ifs.
 var Analyzer = &analysis.Analyzer{
 	Name:     "nestingdepth",
 	Doc:      Doc,
@@ -68,15 +70,15 @@ const MaxNestingDepth = 3
 // MaxIfElseChain is the maximum allowed if-else chain length
 const MaxIfElseChain = 2
 
-func run(pass *analysis.Pass) (interface{}, error) {
+func run(pass *analysis.Pass) (any, error) {
 	reporter := nolint.NewReporter(pass)
-	inspect := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
+	insp := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
 
 	nodeFilter := []ast.Node{
 		(*ast.FuncDecl)(nil),
 	}
 
-	inspect.Preorder(nodeFilter, func(n ast.Node) {
+	insp.Preorder(nodeFilter, func(n ast.Node) {
 		fn, ok := n.(*ast.FuncDecl)
 		if !ok || fn.Body == nil {
 			return
@@ -225,13 +227,11 @@ func checkIfElseChains(reporter *nolint.Reporter, body *ast.BlockStmt) {
 			}
 		}
 
-		if chainLength > MaxIfElseChain {
-			// Check if this could be converted to early returns
-			if couldUseEarlyReturn(ifStmt) {
-				reporter.Reportf(ifStmt.Pos(),
-					"if-else chain with %d branches; consider using early returns to flatten",
-					chainLength)
-			}
+		// Check if this could be converted to early returns
+		if chainLength > MaxIfElseChain && couldUseEarlyReturn(ifStmt) {
+			reporter.Reportf(ifStmt.Pos(),
+				"if-else chain with %d branches; consider using early returns to flatten",
+				chainLength)
 		}
 
 		return true
@@ -288,16 +288,13 @@ func checkFunctionLength(reporter *nolint.Reporter, fn *ast.FuncDecl) {
 	errCheckCount := 0
 
 	ast.Inspect(fn.Body, func(n ast.Node) bool {
-		switch n.(type) {
-		case ast.Stmt:
+		if _, ok := n.(ast.Stmt); ok {
 			stmtCount++
 		}
 
 		// Count if err != nil patterns
-		if ifStmt, ok := n.(*ast.IfStmt); ok {
-			if isErrCheck(ifStmt) {
-				errCheckCount++
-			}
+		if ifStmt, ok := n.(*ast.IfStmt); ok && isErrCheck(ifStmt) {
+			errCheckCount++
 		}
 
 		return true
@@ -321,16 +318,12 @@ func isErrCheck(ifStmt *ast.IfStmt) bool {
 	}
 
 	// Check for err != nil
-	if ident, ok := binExpr.X.(*ast.Ident); ok {
-		if ident.Name == "err" {
-			return true
-		}
+	if ident, ok := binExpr.X.(*ast.Ident); ok && ident.Name == "err" {
+		return true
 	}
 
-	if ident, ok := binExpr.Y.(*ast.Ident); ok {
-		if ident.Name == "err" {
-			return true
-		}
+	if ident, ok := binExpr.Y.(*ast.Ident); ok && ident.Name == "err" {
+		return true
 	}
 
 	return false

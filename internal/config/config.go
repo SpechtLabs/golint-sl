@@ -2,6 +2,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 
@@ -25,7 +26,7 @@ type Config struct {
 func Load() (*Config, error) {
 	path, err := findConfigFile()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("looking for %s: %w", ConfigFileName, err)
 	}
 	if path == "" {
 		// No config file found, return default config
@@ -41,12 +42,12 @@ func Load() (*Config, error) {
 func LoadFrom(path string) (*Config, error) {
 	data, err := os.ReadFile(path) //nolint:gosec // G304: path comes from findConfigFile which validates it's within the project tree
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("reading the golint-sl config: %w", err)
 	}
 
 	var cfg Config
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("parsing %s: %w", path, err)
 	}
 
 	// Ensure Analyzers map exists
@@ -62,7 +63,7 @@ func LoadFrom(path string) (*Config, error) {
 func findConfigFile() (string, error) {
 	dir, err := os.Getwd()
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("getting the working directory: %w", err)
 	}
 
 	for {

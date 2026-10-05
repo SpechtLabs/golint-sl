@@ -15,6 +15,7 @@ import (
 	"github.com/spechtlabs/golint-sl/internal/nolint"
 )
 
+// Doc is the dataflow analyzer's documentation.
 const Doc = `track data flow using SSA to detect security issues
 
 This analyzer uses SSA to trace how values flow through the program:
@@ -25,6 +26,7 @@ This analyzer uses SSA to trace how values flow through the program:
 
 SSA analysis provides more accurate flow tracking than AST alone.`
 
+// Analyzer tracks data flow through SSA to report security issues.
 var Analyzer = &analysis.Analyzer{
 	Name:     "dataflow",
 	Doc:      Doc,
@@ -50,7 +52,7 @@ var DangerousSinks = []string{
 	"sql.Query", "sql.Exec", // SQL injection risk
 }
 
-func run(pass *analysis.Pass) (interface{}, error) {
+func run(pass *analysis.Pass) (any, error) {
 	reporter := nolint.NewReporter(pass)
 	ssaInfo := pass.ResultOf[buildssa.Analyzer].(*buildssa.SSA)
 
@@ -90,13 +92,14 @@ func checkSensitiveDataLeaks(reporter *nolint.Reporter, fn *ssa.Function) {
 		sinks := traceToSinks(param, make(map[ssa.Value]bool))
 
 		for _, sink := range sinks {
-			if call, ok := sink.(*ssa.Call); ok {
-				callee := call.Call.StaticCallee()
-				if callee != nil && isLoggingOrPrintFunction(callee) {
-					reporter.Reportf(call.Pos(),
-						"sensitive parameter %q may be logged; sanitize or redact before logging",
-						param.Name())
-				}
+			call, ok := sink.(*ssa.Call)
+			if !ok {
+				continue
+			}
+			if callee := call.Call.StaticCallee(); callee != nil && isLoggingOrPrintFunction(callee) {
+				reporter.Reportf(call.Pos(),
+					"sensitive parameter %q may be logged; sanitize or redact before logging",
+					param.Name())
 			}
 		}
 	}
@@ -202,25 +205,24 @@ func checkContextPropagation(reporter *nolint.Reporter, fn *ssa.Function) {
 				continue
 			}
 
-			// Check if callee expects context
-			if calleeExpectsContext(callee) {
-				// Check if context is passed
-				contextPassed := false
-				for _, arg := range call.Call.Args {
-					if isContextType(arg.Type()) {
-						contextPassed = true
-						break
-					}
-				}
-
-				if !contextPassed {
-					reporter.Reportf(call.Pos(),
-						"function %s expects context but none was passed; propagate context through the call chain",
-						callee.Name())
-				}
+			// Flag callees that expect a context but are not passed one
+			if calleeExpectsContext(callee) && !passesContext(call) {
+				reporter.Reportf(call.Pos(),
+					"function %s expects context but none was passed; propagate context through the call chain",
+					callee.Name())
 			}
 		}
 	}
+}
+
+// passesContext checks if any argument of call is a context
+func passesContext(call *ssa.Call) bool {
+	for _, arg := range call.Call.Args {
+		if isContextType(arg.Type()) {
+			return true
+		}
+	}
+	return false
 }
 
 // isContextType checks if a type is context.Context
@@ -299,37 +301,57 @@ func (t *TaintAnalysis) Propagate() {
 		changed = false
 
 		for value, source := range t.Sources {
-			refs := value.Referrers()
-			if refs == nil {
-				continue
-			}
-
-			for _, ref := range *refs {
-				// If this instruction produces a new value, it's also tainted
-				if newVal, ok := ref.(ssa.Value); ok {
-					if _, exists := t.Sources[newVal]; !exists {
-						t.Sources[newVal] = source
-						changed = true
-					}
-				}
-
-				// Track calls as potential sinks
-				if call, ok := ref.(*ssa.Call); ok {
-					callee := call.Call.StaticCallee()
-					if callee != nil {
-						sinkType := categorizeSink(callee)
-						if sinkType != "" {
-							t.Sinks = append(t.Sinks, TaintSink{
-								Call:     call,
-								Source:   source,
-								SinkType: sinkType,
-							})
-						}
-					}
-				}
+			if t.propagateFrom(value, source) {
+				changed = true
 			}
 		}
 	}
+}
+
+// propagateFrom taints the values that value's referrers produce and records
+// the sinks it reaches; it reports whether a new value was tainted
+func (t *TaintAnalysis) propagateFrom(value ssa.Value, source string) bool {
+	refs := value.Referrers()
+	if refs == nil {
+		return false
+	}
+
+	changed := false
+	for _, ref := range *refs {
+		// If this instruction produces a new value, it's also tainted
+		if newVal, ok := ref.(ssa.Value); ok {
+			if _, exists := t.Sources[newVal]; !exists {
+				t.Sources[newVal] = source
+				changed = true
+			}
+		}
+
+		// Track calls as potential sinks
+		if call, ok := ref.(*ssa.Call); ok {
+			t.recordSink(call, source)
+		}
+	}
+
+	return changed
+}
+
+// recordSink records call as a sink of source if its callee is a dangerous sink
+func (t *TaintAnalysis) recordSink(call *ssa.Call, source string) {
+	callee := call.Call.StaticCallee()
+	if callee == nil {
+		return
+	}
+
+	sinkType := categorizeSink(callee)
+	if sinkType == "" {
+		return
+	}
+
+	t.Sinks = append(t.Sinks, TaintSink{
+		Call:     call,
+		Source:   source,
+		SinkType: sinkType,
+	})
 }
 
 // categorizeSink determines what kind of dangerous sink a function is
