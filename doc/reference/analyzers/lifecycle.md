@@ -12,10 +12,11 @@ Architecture
 
 ## What It Checks
 
-This analyzer ensures components that start background work have proper lifecycle methods:
+This analyzer ensures components that start background work have proper lifecycle methods. For every type with a run method (`Run`, `Start` or `Serve`, on a plain or generic receiver) it checks that:
 
-- `Run(ctx context.Context) error` for starting
-- `Close() error` for cleanup
+- the type also has a stop method: `Close`, `Stop`, `Shutdown`, `GracefulStop` or `GracefulShutdown`
+- the run method takes a `context.Context`, or a type that implements it, as its first parameter
+- a run method with a long-running loop, `for {}` without a condition or a `range` over a channel, observes cancellation somewhere in its body: a receive from or a call to `ctx.Done()` (or another `Done()` channel), or a `ctx.Err()` check. Loops over slices, maps and integers and loops with a condition are bounded and need no check.
 
 ## Why It Matters
 
