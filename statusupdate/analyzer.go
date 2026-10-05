@@ -10,6 +10,7 @@ import (
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/analysis/passes/inspect"
 	"golang.org/x/tools/go/ast/inspector"
+	"golang.org/x/tools/go/types/typeutil"
 
 	"github.com/spechtlabs/golint-sl/internal/nolint"
 )
@@ -18,13 +19,23 @@ import (
 const Doc = `ensure reconcilers update Status after changes
 
 This analyzer detects reconcilers that:
-1. Modify spec or status fields but don't call Status().Update()
+1. Modify spec or status fields but don't call Status().Update() or
+   Status().Patch()
 2. Create/Update resources but don't reflect state in Status
 3. Handle errors without updating Status.Conditions
 
 Kubernetes best practice is to always update Status to reflect current state,
 including error conditions. This allows users and other controllers to observe
-the actual state of resources.`
+the actual state of resources.
+
+Only an Update, Patch or Apply through Status() or SubResource("status")
+persists the status. Update and Patch on the object itself ignore the status
+subresource, so assigning obj.Status fields and then calling client.Update
+leaves them unsaved. A Patch on something that isn't a client (a patch helper
+such as cluster-api's patch.Helper, which has no Status method) persists spec
+and status together and counts as a status update too, and so does a call of
+a function or method of the package that writes the status, such as an
+updateStatus helper.`
 
 // Analyzer reports reconcilers that change resources without updating their Status.
 var Analyzer = &analysis.Analyzer{
@@ -37,8 +48,14 @@ var Analyzer = &analysis.Analyzer{
 // statusField is the name of the Status subresource field and accessor.
 const statusField = "Status"
 
+// patchMethod is the method a patch helper persists spec and status with.
+const patchMethod = "Patch"
+
 // statusUsage records which mutation and status operations a reconciler performs
 type statusUsage struct {
+	info             *types.Info
+	decls            map[*types.Func]*ast.FuncDecl
+	visited          map[*types.Func]bool
 	resourceMutation bool
 	statusUpdate     bool
 	conditionUpdate  bool
@@ -47,6 +64,7 @@ type statusUsage struct {
 func run(pass *analysis.Pass) (any, error) {
 	reporter := nolint.NewReporter(pass)
 	insp := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
+	decls := funcDecls(pass)
 
 	nodeFilter := []ast.Node{
 		(*ast.FuncDecl)(nil),
@@ -62,10 +80,29 @@ func run(pass *analysis.Pass) (any, error) {
 			return
 		}
 
-		checkReconcilerStatus(reporter, fn)
+		checkReconcilerStatus(reporter, pass.TypesInfo, decls, fn)
 	})
 
 	return nil, nil
+}
+
+// funcDecls maps the functions and methods declared in the package to their
+// declarations, so that a status write in a helper counts for its caller.
+func funcDecls(pass *analysis.Pass) map[*types.Func]*ast.FuncDecl {
+	decls := make(map[*types.Func]*ast.FuncDecl)
+	for _, file := range pass.Files {
+		for _, decl := range file.Decls {
+			fd, ok := decl.(*ast.FuncDecl)
+			if !ok {
+				continue
+			}
+			if fn, ok := pass.TypesInfo.Defs[fd.Name].(*types.Func); ok {
+				decls[fn] = fd
+			}
+		}
+	}
+
+	return decls
 }
 
 func isReconcileFunction(fn *ast.FuncDecl) bool {
@@ -90,18 +127,21 @@ func isReconcileFunction(fn *ast.FuncDecl) bool {
 	return false
 }
 
-func checkReconcilerStatus(reporter *nolint.Reporter, fn *ast.FuncDecl) {
-	var usage statusUsage
+func checkReconcilerStatus(reporter *nolint.Reporter, info *types.Info, decls map[*types.Func]*ast.FuncDecl, fn *ast.FuncDecl) {
+	usage := statusUsage{info: info, decls: decls, visited: make(map[*types.Func]bool)}
 
 	// Track what operations are performed
 	ast.Inspect(fn.Body, func(n ast.Node) bool {
 		if call, ok := n.(*ast.CallExpr); ok {
 			usage.recordCall(call)
+			if !usage.statusUpdate && usage.writesStatus(call) {
+				usage.statusUpdate = true
+			}
 		}
 		return true
 	})
 
-	// Also check for direct Status field assignments
+	// Also check for direct Conditions assignments
 	ast.Inspect(fn.Body, func(n ast.Node) bool {
 		if assign, ok := n.(*ast.AssignStmt); ok {
 			usage.recordAssignment(assign)
@@ -139,11 +179,6 @@ func (u *statusUsage) recordCall(call *ast.CallExpr) {
 		}
 	}
 
-	// Check for Status() calls
-	if methodName == statusField {
-		u.statusUpdate = true
-	}
-
 	// Check for condition updates (various patterns)
 	conditionPatterns := []string{
 		"SetCondition",
@@ -165,17 +200,12 @@ func (u *statusUsage) recordCall(call *ast.CallExpr) {
 	}
 }
 
-// recordAssignment records direct assignments to Status and Conditions fields
+// recordAssignment records direct assignments to Conditions fields
 func (u *statusUsage) recordAssignment(assign *ast.AssignStmt) {
 	for _, lhs := range assign.Lhs {
 		sel, ok := lhs.(*ast.SelectorExpr)
 		if !ok {
 			continue
-		}
-
-		// Check for .Status. assignments
-		if isStatusFieldAccess(sel) {
-			u.statusUpdate = true
 		}
 
 		// Check for .Conditions assignments
@@ -185,18 +215,96 @@ func (u *statusUsage) recordAssignment(assign *ast.AssignStmt) {
 	}
 }
 
-func isStatusFieldAccess(sel *ast.SelectorExpr) bool {
-	// Check for patterns like obj.Status.Field
-	if innerSel, ok := sel.X.(*ast.SelectorExpr); ok && innerSel.Sel.Name == statusField {
+// writesStatus reports whether call persists the status, either itself or
+// through a function or method declared in the package that does, such as a
+// reconciler's updateStatus helper.
+func (u *statusUsage) writesStatus(call *ast.CallExpr) bool {
+	if sel, ok := call.Fun.(*ast.SelectorExpr); ok && u.persistsStatus(sel) {
 		return true
 	}
 
-	// Direct .Status assignment
-	if sel.Sel.Name == statusField {
-		return true
+	callee := typeutil.StaticCallee(u.info, call)
+	if callee == nil || u.visited[callee.Origin()] {
+		return false
+	}
+	u.visited[callee.Origin()] = true
+
+	decl := u.decls[callee.Origin()]
+	if decl == nil || decl.Body == nil {
+		return false
 	}
 
-	return false
+	found := false
+	ast.Inspect(decl.Body, func(n ast.Node) bool {
+		if c, ok := n.(*ast.CallExpr); ok && u.writesStatus(c) {
+			found = true
+		}
+		return !found
+	})
+
+	return found
+}
+
+// persistsStatus reports whether the method call sel writes the status: an
+// Update, Patch or Apply on Status() or SubResource("status"), or a Patch on
+// a patch helper. Update and Patch on the object itself don't persist the
+// status, since the API server ignores status changes there when the status
+// subresource is enabled.
+func (u *statusUsage) persistsStatus(sel *ast.SelectorExpr) bool {
+	switch sel.Sel.Name {
+	case "Update", patchMethod, "Apply":
+		if isStatusWriter(sel.X) {
+			return true
+		}
+	}
+
+	return sel.Sel.Name == patchMethod && u.isPatchHelper(sel.X)
+}
+
+// isStatusWriter reports whether expr is a call of Status() or of
+// SubResource("status"), which return the writer for the status subresource.
+func isStatusWriter(expr ast.Expr) bool {
+	call, ok := expr.(*ast.CallExpr)
+	if !ok {
+		return false
+	}
+
+	sel, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok {
+		return false
+	}
+
+	switch sel.Sel.Name {
+	case statusField:
+		return len(call.Args) == 0
+	case "SubResource":
+		return len(call.Args) == 1 && isStatusLiteral(call.Args[0])
+	default:
+		return false
+	}
+}
+
+// isStatusLiteral reports whether expr is the string literal "status".
+func isStatusLiteral(expr ast.Expr) bool {
+	lit, ok := expr.(*ast.BasicLit)
+	return ok && lit.Value == `"status"`
+}
+
+// isPatchHelper reports whether the receiver expr is a value, not a package,
+// whose type has no Status method: a patch helper such as cluster-api's
+// patch.Helper, which persists spec and status together. A Kubernetes client
+// has a Status method, and its Patch leaves the status alone.
+func (u *statusUsage) isPatchHelper(expr ast.Expr) bool {
+	// A package name has no entry in Types: pkg.Patch is a function call.
+	tv, ok := u.info.Types[expr]
+	if !ok || !tv.IsValue() {
+		return false
+	}
+
+	obj, _, _ := types.LookupFieldOrMethod(tv.Type, true, nil, statusField)
+	_, hasStatusMethod := obj.(*types.Func)
+
+	return !hasStatusMethod
 }
 
 func hasComplexLogic(fn *ast.FuncDecl) bool {

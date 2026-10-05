@@ -7,3 +7,6 @@ import "context"
 type ExternalReconciler struct{}
 
 func (r *ExternalReconciler) Reconcile(ctx context.Context, obj *Object) error
+
+// externalSync is implemented elsewhere; its body can't be followed.
+func externalSync(obj *Object)

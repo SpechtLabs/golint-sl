@@ -14,6 +14,17 @@ Kubernetes
 
 This analyzer detects reconcilers that modify resources but don't update status, leaving users without visibility into the actual state.
 
+Only a write through the status subresource counts as a status update:
+`Status().Update()`, `Status().Patch()`, `Status().Apply()` or the same calls on
+`SubResource("status")`. `Update` and `Patch` on the object itself ignore the
+status subresource, so assigning `obj.Status` fields and then calling
+`r.Update()` leaves the status unsaved and is reported. A `Patch` on a patch
+helper, such as cluster-api's `patch.Helper`, persists spec and status together
+and counts as a status update; the analyzer tells a helper from a client by the
+`Status` method a client has. A call of a function or method declared in the
+same package, such as an `updateStatus` helper, counts when it writes the
+status itself or through another such helper.
+
 ## Why It Matters
 
 Status communicates:
@@ -43,6 +54,14 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
     // Status never updated! Users don't know deployment was created.
     return ctrl.Result{}, nil
 }
+```
+
+### Bad: Status Set but Saved With Update
+
+```go
+obj.Status.Phase = "Ready"
+// Update writes the object, not its status subresource: Phase is lost.
+return ctrl.Result{}, r.Update(ctx, obj)
 ```
 
 ### Good: Status Updated
