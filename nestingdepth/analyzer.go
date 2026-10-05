@@ -18,10 +18,11 @@ import (
 const Doc = `enforce shallow nesting depth and early returns
 
 This analyzer detects:
-1. Functions with nesting depth > 3 (configurable)
-2. If-else chains that should use early returns
-3. Nested if statements that could be flattened
-4. Functions that should be split into smaller helpers
+1. Functions with nesting depth > 3
+2. If-else chains of more than two branches whose first branch returns
+3. Nested if statements that could be combined with &&
+4. Functions with more than five error checks, which should be split into
+   smaller helpers
 
 Deep nesting (indentation hell) causes:
 - Reader fatigue from parsing complex logic
@@ -30,30 +31,37 @@ Deep nesting (indentation hell) causes:
 - Exponential complexity as logic grows
 
 Good pattern (early return):
-    func GetItem(id string) (Item, error) {
-        item, ok := cache.Get(id)
-        if !ok {
-            return Item{}, ErrNotFound
-        }
+    func ActiveItems(ids []string) ([]Item, error) {
+        var items []Item
+        for _, id := range ids {
+            item, ok := cache.Get(id)
+            if !ok || !item.Active {
+                continue
+            }
 
-        if !item.Active {
-            return Item{}, ErrInactive
-        }
+            if item.Expired() {
+                return nil, ErrExpired
+            }
 
-        return item, nil
+            items = append(items, item)
+        }
+        return items, nil
     }
 
-Bad pattern (deep nesting):
-    func GetItem(id string) (Item, error) {
-        if item, ok := cache.Get(id); ok {
-            if item.Active {
-                return item, nil
-            } else {
-                return Item{}, ErrInactive
+Bad pattern (deep nesting, depth 4):
+    func ActiveItems(ids []string) ([]Item, error) {
+        var items []Item
+        for _, id := range ids {
+            if item, ok := cache.Get(id); ok {
+                if item.Active {
+                    if item.Expired() {
+                        return nil, ErrExpired
+                    }
+                    items = append(items, item)
+                }
             }
-        } else {
-            return Item{}, ErrNotFound
         }
+        return items, nil
     }`
 
 // Analyzer reports deeply nested code, long if-else chains and combinable nested ifs.
@@ -192,39 +200,34 @@ func calculateMaxDepthInner(node ast.Node, currentDepth int) int {
 		if bodyDepth > maxDepth {
 			maxDepth = bodyDepth
 		}
-
-	case *ast.BlockStmt:
-		for _, stmt := range n.List {
-			stmtDepth := calculateMaxDepth(stmt, currentDepth)
-			if stmtDepth > maxDepth {
-				maxDepth = stmtDepth
-			}
-		}
 	}
 
 	return maxDepth
 }
 
-// checkIfElseChains detects if-else chains that should use early returns
+// checkIfElseChains detects if-else chains that should use early returns.
+// Every else-if is an IfStmt of its own, so each chain is measured and
+// reported once, at its head, and its else-ifs are skipped when the walk
+// reaches them.
 func checkIfElseChains(reporter *nolint.Reporter, body *ast.BlockStmt) {
+	inChain := make(map[*ast.IfStmt]bool)
+
 	ast.Inspect(body, func(n ast.Node) bool {
 		ifStmt, ok := n.(*ast.IfStmt)
-		if !ok {
+		if !ok || inChain[ifStmt] {
 			return true
 		}
 
-		// Count else-if chain length
+		// Count else-if chain length; a final else block is a branch too
 		chainLength := 1
-		current := ifStmt
-		for current.Else != nil {
-			if elseIf, ok := current.Else.(*ast.IfStmt); ok {
-				chainLength++
-				current = elseIf
-			} else {
-				// else block (not else-if)
-				chainLength++
+		for current := ifStmt; current.Else != nil; {
+			chainLength++
+			elseIf, ok := current.Else.(*ast.IfStmt)
+			if !ok {
 				break
 			}
+			inChain[elseIf] = true
+			current = elseIf
 		}
 
 		// Check if this could be converted to early returns
@@ -283,24 +286,14 @@ func checkNestedIfs(reporter *nolint.Reporter, body *ast.BlockStmt) {
 
 // checkFunctionLength checks if a function is too long and should be split
 func checkFunctionLength(reporter *nolint.Reporter, fn *ast.FuncDecl) {
-	// Count statements (rough proxy for complexity)
-	stmtCount := 0
+	// Count if err != nil patterns
 	errCheckCount := 0
-
 	ast.Inspect(fn.Body, func(n ast.Node) bool {
-		if _, ok := n.(ast.Stmt); ok {
-			stmtCount++
-		}
-
-		// Count if err != nil patterns
 		if ifStmt, ok := n.(*ast.IfStmt); ok && isErrCheck(ifStmt) {
 			errCheckCount++
 		}
-
 		return true
 	})
-
-	_ = stmtCount // Reserved for future use
 
 	// If function has many error checks, suggest splitting
 	if errCheckCount > 5 {
