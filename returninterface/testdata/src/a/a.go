@@ -2,10 +2,13 @@
 package a
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"io"
+	stdio "io"
 	"net/http"
+	nethttp "net/http"
 	"sort"
 
 	humane "github.com/sierrasoftworks/humane-errors-go"
@@ -89,5 +92,44 @@ func Identity[T any](v T) T { return v }
 
 // Good: suppressed with a nolint directive.
 func Suppressed() Storage { //nolint:returninterface
+	return nil
+}
+
+// Good: a type parameter is not an interface result, whatever its constraint.
+func Max[T cmp.Ordered](a, b T) T {
+	return max(a, b)
+}
+
+func First[T comparable](xs []T) T { return xs[0] }
+
+type Number interface{ ~int | ~float64 }
+
+func Sum[T Number](xs ...T) T {
+	var total T
+	for _, x := range xs {
+		total += x
+	}
+	return total
+}
+
+// Good: the allow list matches a renamed import too.
+func Source() stdio.Reader { return nil }
+
+func Mount() nethttp.Handler { return nil }
+
+// Good: an alias of an allow-listed interface.
+type ByteSource = io.Reader
+
+func Bytes() ByteSource { return nil }
+
+// Bad: a renamed import does not hide an interface that is not allow-listed.
+func Respond() nethttp.ResponseWriter { // want `function "Respond" returns interface "nethttp.ResponseWriter"`
+	return nil
+}
+
+// Bad: a generic interface is still an interface.
+type Getter[T any] interface{ Get() T }
+
+func Lookup[T any]() Getter[T] { // want `function "Lookup" returns interface "Getter\[T\]"`
 	return nil
 }

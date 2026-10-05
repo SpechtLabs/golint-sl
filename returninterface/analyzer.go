@@ -54,11 +54,12 @@ var Analyzer = &analysis.Analyzer{
 	Run:      run,
 }
 
-// Standard library interfaces that are acceptable to return
+// Interfaces that are acceptable to return, keyed by the package path and
+// the name of the type, so the key doesn't depend on the import's name.
 var acceptableReturnInterfaces = map[string]bool{
 	// Error handling
-	"error":        true,
-	"humane.Error": true, // humane-errors-go error type
+	"error": true,
+	"github.com/sierrasoftworks/humane-errors-go.Error": true, // humane-errors-go error type
 
 	// IO interfaces
 	"io.Reader":     true,
@@ -75,8 +76,8 @@ var acceptableReturnInterfaces = map[string]bool{
 	"sort.Interface": true,
 
 	// HTTP
-	"http.Handler":      true,
-	"http.RoundTripper": true,
+	"net/http.Handler":      true,
+	"net/http.RoundTripper": true,
 }
 
 // Function name patterns that suggest factory functions (acceptable to return interface)
@@ -99,12 +100,7 @@ func run(pass *analysis.Pass) (any, error) {
 	}
 
 	insp.Preorder(nodeFilter, func(n ast.Node) {
-		fn, ok := n.(*ast.FuncDecl)
-		if !ok {
-			return
-		}
-
-		checkFunction(reporter, pass, fn)
+		checkFunction(reporter, pass, n.(*ast.FuncDecl))
 	})
 
 	return nil, nil
@@ -153,15 +149,16 @@ func isFactoryFunction(name string) bool {
 }
 
 func isNonAcceptableInterface(pass *analysis.Pass, expr ast.Expr) bool {
-	// Get the type
-	tv, ok := pass.TypesInfo.Types[expr]
-	if !ok {
-		// Fallback to AST-based check
-		return isInterfaceAST(expr)
+	typ := types.Unalias(pass.TypesInfo.TypeOf(expr))
+
+	// A type parameter's underlying type is its constraint, which is an
+	// interface, but the caller gets the concrete type it instantiates T with.
+	if _, ok := typ.(*types.TypeParam); ok {
+		return false
 	}
 
 	// Check if it's an interface type
-	iface, ok := tv.Type.Underlying().(*types.Interface)
+	iface, ok := typ.Underlying().(*types.Interface)
 	if !ok {
 		return false
 	}
@@ -171,46 +168,27 @@ func isNonAcceptableInterface(pass *analysis.Pass, expr ast.Expr) bool {
 		return false
 	}
 
-	// Check if it's an acceptable interface
-	typeName := types.ExprString(expr)
-	if acceptableReturnInterfaces[typeName] {
+	// An interface literal has no name to allow.
+	named, ok := typ.(*types.Named)
+	if !ok {
+		return true
+	}
+
+	obj := named.Obj()
+	if acceptableReturnInterfaces[qualifiedName(obj)] {
 		return false
 	}
 
-	// Check common interface names that are acceptable
 	// Error interfaces are idiomatic Go - allow both "error" and "Error" suffix
-	lowerTypeName := strings.ToLower(typeName)
-	if strings.HasSuffix(lowerTypeName, "error") || strings.HasSuffix(lowerTypeName, ".error") {
-		return false
-	}
-
-	return true
+	return !strings.HasSuffix(strings.ToLower(obj.Name()), "error")
 }
 
-func isInterfaceAST(expr ast.Expr) bool {
-	switch t := expr.(type) {
-	case *ast.InterfaceType:
-		return true
-
-	case *ast.Ident:
-		// Could be a named interface type
-		// Check common patterns
-		name := t.Name
-		// Interface names often end with "er" or start with "I"
-		if strings.HasSuffix(name, "er") && !strings.HasSuffix(name, "Error") {
-			return true
-		}
-		// Common interface type names
-		if name == "any" || name == "error" {
-			return false // Handled elsewhere
-		}
-		return false
-
-	case *ast.SelectorExpr:
-		// pkg.Type - check against acceptable list
-		typeName := types.ExprString(t)
-		return !acceptableReturnInterfaces[typeName]
+// qualifiedName returns the package path and the name of obj, or only the
+// name for a predeclared type such as error.
+func qualifiedName(obj *types.TypeName) string {
+	if obj.Pkg() == nil {
+		return obj.Name()
 	}
 
-	return false
+	return obj.Pkg().Path() + "." + obj.Name()
 }
