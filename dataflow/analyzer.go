@@ -16,6 +16,7 @@ import (
 	"golang.org/x/tools/go/analysis/passes/buildssa"
 	"golang.org/x/tools/go/ssa"
 
+	"github.com/spechtlabs/golint-sl/internal/credname"
 	"github.com/spechtlabs/golint-sl/internal/nolint"
 )
 
@@ -23,7 +24,8 @@ import (
 const Doc = `track data flow using SSA to detect security issues
 
 This analyzer uses SSA to trace how values flow through the program:
-1. Sensitive parameters (passwords, tokens, secrets) should not flow to
+1. Sensitive parameters, those whose name names a credential (dbPassword,
+   authToken, apiKey; not key, author or secretName), should not flow to
    logging or printing functions, directly or as variadic arguments
 2. A function that has a context should pass one to callees whose first
    parameter is a context
@@ -38,7 +40,14 @@ var Analyzer = &analysis.Analyzer{
 	Run:      run,
 }
 
-// SensitivePatterns are parameter/variable names that might contain sensitive data
+// SensitivePatterns are the credential words parameter names used to be
+// matched against as substrings, which made key, auth and cert match monkey,
+// author and certainty.
+//
+// Deprecated: the analyzer now decides by the words of a parameter's name
+// (see internal/credname): dbPassword, authToken and apiKey are sensitive,
+// key, author and tokenizer are not. The list is kept for compatibility and
+// is not used.
 var SensitivePatterns = []string{
 	"password", "passwd", "pwd",
 	"secret", "token", "key",
@@ -97,18 +106,8 @@ func run(pass *analysis.Pass) (any, error) {
 // checkSensitiveDataLeaks traces sensitive parameters to see if they reach logging
 func checkSensitiveDataLeaks(reporter *nolint.Reporter, fn *ssa.Function) {
 	for _, param := range fn.Params {
-		paramName := strings.ToLower(param.Name())
-
-		// Check if this parameter looks sensitive
-		isSensitive := false
-		for _, pattern := range SensitivePatterns {
-			if strings.Contains(paramName, pattern) {
-				isSensitive = true
-				break
-			}
-		}
-
-		if !isSensitive {
+		// Check if this parameter names a credential
+		if !credname.IsCredential(param.Name()) {
 			continue
 		}
 

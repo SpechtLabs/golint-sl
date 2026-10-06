@@ -1,4 +1,4 @@
-package hardcodedcreds
+package credname
 
 import (
 	"slices"
@@ -25,14 +25,14 @@ func TestNameWords(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := nameWords(tt.name); !slices.Equal(got, tt.want) {
-				t.Errorf("nameWords(%q) = %q, want %q", tt.name, got, tt.want)
+			if got := Words(tt.name); !slices.Equal(got, tt.want) {
+				t.Errorf("Words(%q) = %q, want %q", tt.name, got, tt.want)
 			}
 		})
 	}
 }
 
-func TestIsSuspiciousName(t *testing.T) {
+func TestIsCredential(t *testing.T) {
 	tests := []struct {
 		name string
 		want bool
@@ -49,6 +49,9 @@ func TestIsSuspiciousName(t *testing.T) {
 		{name: "tokenStr", want: true},
 		{name: "basicAuth", want: true},
 		{name: "credentials", want: true},
+		{name: "cred", want: true},
+		{name: "awsCreds", want: true},
+		{name: "credit", want: false},
 		{name: "author", want: false},
 		{name: "tokenizerMode", want: false},
 		{name: "tokenURL", want: false},
@@ -63,8 +66,8 @@ func TestIsSuspiciousName(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := isSuspiciousName(tt.name); got != tt.want {
-				t.Errorf("isSuspiciousName(%q) = %v, want %v", tt.name, got, tt.want)
+			if got := IsCredential(tt.name); got != tt.want {
+				t.Errorf("IsCredential(%q) = %v, want %v", tt.name, got, tt.want)
 			}
 		})
 	}
