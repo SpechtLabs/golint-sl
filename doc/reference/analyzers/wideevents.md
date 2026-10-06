@@ -37,6 +37,8 @@ The analyzer recognizes:
 
 A wide event has request context when one of its fields is named, ignoring case and the separators `_`, `-` and `.`, with one of these names or ends in one: `trace_id`, `span_id`, `request_id`, `req_id`, `correlation_id`, `correlation`, `user_id`, `service`, `traceparent`. So `dd.trace_id`, `http.request_id` and `traceId` count; `id` and `user` don't.
 
+Only functions that take a `context.Context` are asked for request context: a function without one isn't handling a request, so a startup, shutdown or CLI event has nothing to correlate with.
+
 ## Why It Matters
 
 > "One log line per request per service with 50+ structured fields beats 15 scattered log statements."
