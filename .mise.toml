@@ -42,7 +42,7 @@ pinact = "5.0.0"
 # markdownlint-cli2 is an npm package, which mise installs with node.
 bun = "1.4.3"
 node = "24.22.1"
-markdownlint-cli2 = "0.23.3"
+markdownlint-cli2 = "0.24.0"
 
 [tasks.build]
 description = "Build the golint-sl binary into bin/"
