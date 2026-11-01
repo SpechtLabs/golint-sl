@@ -39,7 +39,7 @@
     "mermaid": "^12.2.0"
   },
   "optionalDependencies": {
-    "@rollup/rollup-linux-x64-gnu": "^4.67.3",
+    "@rollup/rollup-linux-x64-gnu": "^4.67.4",
     "sass-embedded-linux-x64": "latest"
   },
   "scripts": {
