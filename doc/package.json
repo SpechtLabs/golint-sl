@@ -36,7 +36,7 @@
     "vuepress-theme-plume": "1.0.0-rc.214"
   },
   "dependencies": {
-    "mermaid": "^12.2.0"
+    "mermaid": "^12.3.0"
   },
   "optionalDependencies": {
     "@rollup/rollup-linux-x64-gnu": "^4.67.4",
