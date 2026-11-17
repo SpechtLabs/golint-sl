@@ -18,7 +18,7 @@
         "vuepress-theme-plume": "1.0.0-rc.216",
       },
       "optionalDependencies": {
-        "@rollup/rollup-linux-x64-gnu": "^4.68.3",
+        "@rollup/rollup-linux-x64-gnu": "^4.68.4",
         "sass-embedded-linux-x64": "latest",
       },
     },
@@ -214,7 +214,7 @@
 
     "@rolldown/pluginutils": ["@rolldown/pluginutils@1.1.0", "", {}, "sha512-K+NU2HDCEem4sClgHH4ZZXwdJeNFkJo+hRk479DIwdIviAPN2hFJH1KHHwg8CxHQXvi0M5XY4deTXINfIiSG6w=="],
 
-    "@rollup/rollup-linux-x64-gnu": ["@rollup/rollup-linux-x64-gnu@4.68.3", "", { "os": "linux", "cpu": "x64", "libc": "glibc" }, "sha512-pfn4Zd9Ic3lEaSwW3GsQhTIDd7929C+eiEkOutsSCT2IHD6rDLblwmMQkgeGOso0oDo9Jk/ERtFdtFr9ElLs+g=="],
+    "@rollup/rollup-linux-x64-gnu": ["@rollup/rollup-linux-x64-gnu@4.68.4", "", { "os": "linux", "cpu": "x64", "libc": "glibc" }, "sha512-a4T4Ji3Is/TCh4rUuV6ehDdSMp3hxLH/v7mP4VT0kVB90Hfr9GUHVAiJhiJ3iy+tJ4qpvIG4haP+HpivOyWYpw=="],
 
     "@shikijs/colorized-brackets": ["@shikijs/colorized-brackets@4.6.0", "", { "dependencies": { "shiki": "4.6.0" } }, "sha512-tkvbua8MzWVMHBcc9mx8zgEqV1C2aaaOQ0BWhMUgifpJb1Qh3VLSQoYXIJcQp5ANd4wjtHvNwrAbY90t6coMZQ=="],
 
