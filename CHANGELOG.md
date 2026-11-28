@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.13](https://github.com/SpechtLabs/golint-sl/compare/v0.1.12...v0.1.13) (2026-11-28)
+
+
+### Bug Fixes
+
+* **deps:** update module golang.org/x/tools to v0.52.0 ([#108](https://github.com/SpechtLabs/golint-sl/issues/108)) ([0744f3f](https://github.com/SpechtLabs/golint-sl/commit/0744f3f1f51204ba08bc83469a38c67c9d04303d))
+* **deps:** update module golang.org/x/tools to v0.53.0 ([#304](https://github.com/SpechtLabs/golint-sl/issues/304)) ([62dbad4](https://github.com/SpechtLabs/golint-sl/commit/62dbad42a668e1b180ca641d9214e90ee29cf0b9))
+
 ## [0.1.12](https://github.com/SpechtLabs/golint-sl/compare/v0.1.11...v0.1.12) (2026-10-05)
 
 
